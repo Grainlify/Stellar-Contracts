@@ -450,3 +450,71 @@ fn leaf_construction_is_deterministic() {
 fn _fixture_fields_used(f: &Fixture) {
     let _ = (&f.contract, &f.admin, &f.token_admin);
 }
+
+// ---------------------------------------------------------------------------
+// Cross-implementation leaf pin
+// ---------------------------------------------------------------------------
+
+/// The leaf digest for a fixed set of inputs, pinned as a golden value.
+///
+/// `leaf()` is exported so the backend's Merkle builder can be tested against
+/// this contract rather than against a second implementation of the same rules
+/// that can drift. That cross-check was never wired up, and the two did drift:
+/// as of this commit the Go builder in `internal/chain/merkle.go` produces
+/// `4058d072...` for the same entitlement, against `5b28103d...` here. They
+/// hash different field sets, so no choice of inputs makes them agree.
+///
+/// This test pins what the contract does today. It is expected to fail
+/// deliberately when the construction is changed - that failure is the point,
+/// and the same vector is asserted from the Go side so a change on either side
+/// is visible on both.
+///
+/// The identical vector lives at
+/// `Grainlify-Backend/internal/chain/testdata/leaf_vector.json`. The two copies
+/// must stay byte-identical.
+#[test]
+fn leaf_matches_the_pinned_cross_implementation_vector() {
+    let env = Env::default();
+    let contract = env.register_contract(None, GrainhackEscrow);
+    let client = GrainhackEscrowClient::new(&env, &contract);
+
+    // A fixed, valid Stellar address rather than a generated one, so the
+    // digest is reproducible across runs and machines.
+    let claimant = Address::from_string(&soroban_sdk::String::from_str(
+        &env,
+        "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+    ));
+    let identity = BytesN::from_array(&env, &[0x11u8; 32]);
+    let amount = 1_500_000i128;
+
+    let contributor = client.leaf(&Pool::Contributor, &claimant, &identity, &amount);
+    assert_eq!(
+        contributor,
+        BytesN::from_array(
+            &env,
+            &[
+                0x5b, 0x28, 0x10, 0x3d, 0x10, 0xe8, 0xdd, 0x70, 0x9b, 0x2c, 0x7d, 0x25, 0x7b, 0xb2,
+                0x12, 0xcd, 0xec, 0x80, 0xfa, 0xc5, 0xb4, 0xf2, 0xae, 0xde, 0xcb, 0x41, 0xe2, 0x49,
+                0x55, 0xac, 0xb6, 0xa3,
+            ]
+        ),
+        "contributor leaf digest changed; update the vector in BOTH repositories deliberately"
+    );
+
+    // The pool byte is inside the hash, so the same entitlement in the other
+    // pool is a different leaf. This is the property the Go builder lacks.
+    let maintainer = client.leaf(&Pool::Maintainer, &claimant, &identity, &amount);
+    assert_ne!(contributor, maintainer);
+    assert_eq!(
+        maintainer,
+        BytesN::from_array(
+            &env,
+            &[
+                0xe5, 0xd1, 0x6d, 0x25, 0xea, 0xcf, 0xff, 0x66, 0x96, 0x85, 0x52, 0xc1, 0x9b, 0x07,
+                0xfc, 0x8e, 0x16, 0xf3, 0xfc, 0x22, 0xb0, 0x9e, 0x4c, 0x1a, 0xa6, 0xe5, 0x83, 0xa8,
+                0x48, 0x8a, 0x23, 0x95,
+            ]
+        ),
+        "maintainer leaf digest changed; update the vector in BOTH repositories deliberately"
+    );
+}
