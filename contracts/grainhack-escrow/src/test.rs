@@ -459,15 +459,14 @@ fn _fixture_fields_used(f: &Fixture) {
 ///
 /// `leaf()` is exported so the backend's Merkle builder can be tested against
 /// this contract rather than against a second implementation of the same rules
-/// that can drift. That cross-check was never wired up, and the two did drift:
-/// as of this commit the Go builder in `internal/chain/merkle.go` produces
-/// `4058d072...` for the same entitlement, against `5b28103d...` here. They
-/// hash different field sets, so no choice of inputs makes them agree.
+/// that can drift. That cross-check was never wired up and the two did drift -
+/// the contract hashed an XDR address and a 16-byte amount, the backend hashed
+/// a UTF-8 address, an 8-byte amount, a chain id and an event id, and a root
+/// built by one could not be claimed against the other.
 ///
-/// This test pins what the contract does today. It is expected to fail
-/// deliberately when the construction is changed - that failure is the point,
-/// and the same vector is asserted from the Go side so a change on either side
-/// is visible on both.
+/// Both now compute the canonical construction of spec §13.1 and this vector
+/// holds the agreed digests. If it fails, one side moved: fix the side that
+/// moved rather than updating the vector to make it pass.
 ///
 /// The identical vector lives at
 /// `Grainlify-Backend/internal/chain/testdata/leaf_vector.json`. The two copies
@@ -493,9 +492,7 @@ fn leaf_matches_the_pinned_cross_implementation_vector() {
         BytesN::from_array(
             &env,
             &[
-                0x5b, 0x28, 0x10, 0x3d, 0x10, 0xe8, 0xdd, 0x70, 0x9b, 0x2c, 0x7d, 0x25, 0x7b, 0xb2,
-                0x12, 0xcd, 0xec, 0x80, 0xfa, 0xc5, 0xb4, 0xf2, 0xae, 0xde, 0xcb, 0x41, 0xe2, 0x49,
-                0x55, 0xac, 0xb6, 0xa3,
+                0xa1, 0x2f, 0x90, 0xc9, 0xb7, 0x23, 0x38, 0x97, 0x26, 0xf6, 0x3f, 0x70, 0xb9, 0xdd, 0x6f, 0x81, 0x5b, 0x45, 0xc6, 0x70, 0x7b, 0x22, 0xb5, 0xfc, 0x6d, 0xa2, 0x2d, 0xef, 0x73, 0x80, 0x55, 0xfe,
             ]
         ),
         "contributor leaf digest changed; update the vector in BOTH repositories deliberately"
@@ -510,9 +507,7 @@ fn leaf_matches_the_pinned_cross_implementation_vector() {
         BytesN::from_array(
             &env,
             &[
-                0xe5, 0xd1, 0x6d, 0x25, 0xea, 0xcf, 0xff, 0x66, 0x96, 0x85, 0x52, 0xc1, 0x9b, 0x07,
-                0xfc, 0x8e, 0x16, 0xf3, 0xfc, 0x22, 0xb0, 0x9e, 0x4c, 0x1a, 0xa6, 0xe5, 0x83, 0xa8,
-                0x48, 0x8a, 0x23, 0x95,
+                0x17, 0x29, 0xf8, 0xad, 0x8f, 0x47, 0xe8, 0xfc, 0xf0, 0x15, 0xb0, 0x77, 0x09, 0x31, 0x11, 0xf5, 0xe1, 0x4f, 0x20, 0xa6, 0x64, 0x37, 0x3b, 0xaf, 0x6d, 0x49, 0x04, 0x1f, 0x59, 0x67, 0xbc, 0xea,
             ]
         ),
         "maintainer leaf digest changed; update the vector in BOTH repositories deliberately"

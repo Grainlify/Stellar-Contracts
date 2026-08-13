@@ -19,7 +19,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short,
-    token, xdr::ToXdr, Address, Bytes, BytesN, Env, Symbol, Vec,
+    token, Address, Bytes, BytesN, Env, Symbol, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -473,13 +473,38 @@ impl GrainhackEscrow {
         env.storage().instance().get(&Key::Balance(pool)).unwrap_or(0)
     }
 
-    /// `leaf = H(0x00 || pool || claimant || identity_hash || amount)`
+    /// `leaf = H(0x00 || pool || len(address) || address || identity_hash || amount_be32)`
     ///
-    /// The pool is part of the leaf so a contributor leaf can never verify
-    /// against the maintainer root, and the amount is included as fixed-width
-    /// big-endian bytes rather than a decimal string - §9 requires exact
-    /// integers on-chain, and a string encoding would let "10" and "10.0"
-    /// produce different leaves for the same amount.
+    /// The canonical construction (spec §13.1), identical in field order and
+    /// encoding to the backend's `ClaimLeaf.Hash`. It is pinned from both sides
+    /// against a shared vector; the two drifted once, which is what the vector
+    /// exists to prevent.
+    ///
+    /// Three things here are deliberate and were changed from the original:
+    ///
+    /// **The address is hashed as its canonical strkey string, not XDR.** XDR
+    /// forced every off-chain builder to implement Stellar's encoding - the
+    /// chain-specific leakage §3.1 exists to prevent - and it has no meaning at
+    /// all on EVM, so the second chain would have had to invent something
+    /// anyway. The string is what both sides already hold.
+    ///
+    /// **The address length is prefixed.** Concatenating variable-length fields
+    /// without it leaves the boundaries unrecoverable, so two different
+    /// entitlements can produce the same digest. The backend's construction
+    /// demonstrably did.
+    ///
+    /// **The amount is 32-byte big-endian**, not 16. Wide enough for EVM's
+    /// uint256 so no chain narrows what another can express. Fixed-width so
+    /// "10" and "10.0" cannot differ (§9).
+    ///
+    /// The pool byte stays, and stays first: it is what makes a contributor
+    /// leaf structurally unable to verify against the maintainer root.
+    ///
+    /// **chain_id and event_id are deliberately not here.** One deployed escrow
+    /// is one event on one chain and the root lives inside it, so a leaf built
+    /// elsewhere has nowhere to be replayed. Adding them would mean storing and
+    /// canonicalising two strings this contract cannot otherwise verify, to
+    /// re-derive scoping it already has structurally. Do not add them.
     fn leaf_hash(
         env: &Env,
         pool: &Pool,
@@ -493,10 +518,34 @@ impl GrainhackEscrow {
             Pool::Contributor => 0u8,
             Pool::Maintainer => 1u8,
         });
-        buf.append(&claimant.to_xdr(env));
+
+        // Canonical string form of the address, length-prefixed big-endian.
+        let addr = claimant.to_string();
+        let addr_len = addr.len() as usize;
+        let mut addr_buf = [0u8; 64];
+        addr.copy_into_slice(&mut addr_buf[..addr_len]);
+        buf.push_back(((addr_len >> 8) & 0xff) as u8);
+        buf.push_back((addr_len & 0xff) as u8);
+        buf.append(&Bytes::from_slice(env, &addr_buf[..addr_len]));
+
         buf.append(&Bytes::from_slice(env, &identity_hash.to_array()));
-        buf.append(&Bytes::from_slice(env, &amount.to_be_bytes()));
+        buf.append(&Bytes::from_slice(env, &Self::amount_be32(amount)));
         env.crypto().sha256(&buf).into()
+    }
+
+    /// An amount as 32-byte big-endian, right-aligned.
+    ///
+    /// A negative amount is rendered as zero rather than sign-extended. Every
+    /// caller already rejects non-positive amounts before reaching here; what
+    /// must never happen is a negative silently becoming an enormous positive.
+    fn amount_be32(amount: i128) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        if amount <= 0 {
+            return out;
+        }
+        let be = amount.to_be_bytes();
+        out[16..].copy_from_slice(&be);
+        out
     }
 
     /// Verify a Merkle proof, hashing sorted pairs with the internal-node
