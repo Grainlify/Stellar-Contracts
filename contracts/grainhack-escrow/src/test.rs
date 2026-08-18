@@ -1,5 +1,10 @@
 #![cfg(test)]
 
+// The contract itself is `no_std`; the test harness is not. Linking std here
+// keeps `Vec` and `sort_by_key` available to the tree-vector helpers without
+// relaxing the contract's own no_std guarantee.
+extern crate std;
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
@@ -512,4 +517,202 @@ fn leaf_matches_the_pinned_cross_implementation_vector() {
         ),
         "maintainer leaf digest changed; update the vector in BOTH repositories deliberately"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tree vectors
+// ---------------------------------------------------------------------------
+
+/// A synthetic leaf digest from the shared vector's generator:
+///
+/// ```text
+/// leaf_i = sha256( 0xFF || uint16_be(i) )
+/// ```
+///
+/// Synthetic so the tree vectors pin the tree rule alone and stay valid on any
+/// chain whatever its address encoding - the leaf construction itself is pinned
+/// separately by `leaf_matches_the_pinned_cross_implementation_vector`. `0xFF`
+/// is neither the leaf prefix nor the node prefix, so a synthetic digest can
+/// never collide with a real leaf.
+fn synth_leaf(env: &Env, i: u16) -> BytesN<32> {
+    sha(env, &[&[0xFFu8], &i.to_be_bytes()])
+}
+
+/// Build a root from leaf digests exactly as the backend does: sort ascending,
+/// hash sorted pairs with the node prefix, promote an odd node rather than
+/// duplicating it.
+///
+/// Input is deliberately taken in generator order, not pre-sorted - the sort is
+/// one of the three rules under test.
+fn root_from_digests(env: &Env, digests: &[BytesN<32>]) -> BytesN<32> {
+    let mut level: std::vec::Vec<BytesN<32>> = digests.to_vec();
+    level.sort_by_key(|d| d.to_array());
+
+    while level.len() > 1 {
+        let mut next: std::vec::Vec<BytesN<32>> = std::vec::Vec::new();
+        let mut i = 0usize;
+        while i < level.len() {
+            if i + 1 == level.len() {
+                next.push(level[i].clone()); // promote, never duplicate
+                i += 1;
+                continue;
+            }
+            next.push(node(env, &level[i], &level[i + 1]));
+            i += 2;
+        }
+        level = next;
+    }
+    level[0].clone()
+}
+
+/// The tree, pinned across implementations - the leaf already was, the tree was
+/// not.
+///
+/// Every internal-node rule (the 0x01 prefix, the ascending leaf sort,
+/// promote-not-duplicate) was free to differ between this contract and the
+/// backend while both suites stayed green. Measured, not suspected: with the
+/// whole Go suite passing, deleting the node prefix, changing it, and reversing
+/// the leaf sort all survived.
+///
+/// The counts are chosen. Because sibling pairs are sorted inside the node
+/// hash, reversing the leaf sort is invisible at power-of-two counts and
+/// changes the root everywhere else:
+///
+/// ```text
+/// n=2 identical   n=3 DIFFERENT   n=4 identical   n=5 DIFFERENT
+/// n=6 DIFFERENT   n=7 DIFFERENT   n=8 identical
+/// ```
+///
+/// So 3, 5, 6 and 7 are the counts that can catch it; 1 and 2 anchor the
+/// degenerate cases; 38 is the real founding contributor pool size and the
+/// first tree intended for publication.
+///
+/// These digests are byte-identical to `tree_vectors.roots` in
+/// `Grainlify-Backend/internal/chain/testdata/leaf_vector.json`. If this fails,
+/// one implementation moved - fix the side that moved, do not edit the vector.
+/// A published root cannot be corrected, so a vector edited to match a changed
+/// builder is a claim nobody can make.
+#[test]
+fn tree_roots_match_the_pinned_cross_implementation_vectors() {
+    let env = Env::default();
+
+    let cases: [(u16, [u8; 32]); 7] = [
+        (1, hex32("7fa54a42524916a1648ec76ce75d295024840b7a3a4f4bbaf3e43155d0014767")),
+        (2, hex32("f5c9186b3b65e6ce5e21dbc239099cca42e0a33498441279117df13a37dcbac2")),
+        (3, hex32("ee89867ea8655639197d33339b404961ea36d5bbb6a0dba2f1149a8c7dc1eddc")),
+        (5, hex32("70f49ea377797a1ce9e8e065d5e77024393a2109a8b6c8caf51c4a1b975242b3")),
+        (6, hex32("d882a0abe524b3f68d10aa4da5e199b9284258b523abae598568fdfff89bdc43")),
+        (7, hex32("73f9296cbe6d89bc6edb6ae7a8ec0cf4633c80bbe390da0fb0ea4291ac7427c5")),
+        (38, hex32("7b4e1ecf8567f90c1fad1bdfac40a72fdb1444205b258994b65aa80078bcd093")),
+    ];
+
+    for (n, want) in cases {
+        let digests: std::vec::Vec<BytesN<32>> = (0..n).map(|i| synth_leaf(&env, i)).collect();
+        let got = root_from_digests(&env, &digests);
+        assert_eq!(
+            got,
+            BytesN::from_array(&env, &want),
+            "root for n={} disagrees with the shared vector",
+            n
+        );
+    }
+}
+
+/// The pinned proof, verified through the contract's real `verify_proof` rather
+/// than through the test helper.
+///
+/// `root_from_digests` above and the backend's builder are two implementations
+/// of one rule, so agreeing with each other is necessary but not sufficient -
+/// both could drift away from the code that actually settles a claim. This
+/// builds a real three-leaf tree, publishes its root and claims the leaf whose
+/// path crosses the PROMOTED node, which is the case a duplicating verifier
+/// gets wrong and which the existing two-leaf claim tests never reach.
+#[test]
+fn a_claim_verifies_through_a_promoted_node_in_an_odd_tree() {
+    let f = setup(0);
+
+    let a = Address::generate(&f.env);
+    let b = Address::generate(&f.env);
+    let c = Address::generate(&f.env);
+    let id_a = BytesN::from_array(&f.env, &[0x0A; 32]);
+    let id_b = BytesN::from_array(&f.env, &[0x0B; 32]);
+    let id_c = BytesN::from_array(&f.env, &[0x0C; 32]);
+
+    f.client.fund(&Pool::Contributor, &f.sponsor, &600i128);
+
+    let la = f.client.leaf(&Pool::Contributor, &a, &id_a, &100i128);
+    let lb = f.client.leaf(&Pool::Contributor, &b, &id_b, &200i128);
+    let lc = f.client.leaf(&Pool::Contributor, &c, &id_c, &300i128);
+
+    // Canonical order is by digest, not by the order they were created.
+    let mut sorted = std::vec![la.clone(), lb.clone(), lc.clone()];
+    sorted.sort_by_key(|d| d.to_array());
+
+    // Three leaves: [s0, s1] pair, s2 is promoted unchanged to the next level.
+    let paired = node(&f.env, &sorted[0], &sorted[1]);
+    let root = node(&f.env, &paired, &sorted[2]);
+    assert_eq!(
+        root,
+        root_from_digests(&f.env, &[la.clone(), lb.clone(), lc.clone()]),
+        "the hand-built odd tree disagrees with the vector builder"
+    );
+
+    f.client.publish_root(&Pool::Contributor, &root, &600i128);
+
+    // s0's path is [s1, promoted s2]: the second step folds in a node that was
+    // never hashed, which is exactly what promotion means.
+    let (claimant, identity, amount) = owner_of(&sorted[0], &[
+        (&la, &a, &id_a, 100i128),
+        (&lb, &b, &id_b, 200i128),
+        (&lc, &c, &id_c, 300i128),
+    ]);
+
+    f.client.claim(
+        &Pool::Contributor,
+        &claimant,
+        &identity,
+        &amount,
+        &vec![&f.env, sorted[1].clone(), sorted[2].clone()],
+    );
+
+    let token_client = token::Client::new(&f.env, &f.token);
+    assert_eq!(token_client.balance(&claimant), amount);
+    assert!(f.client.is_claimed(&sorted[0]));
+}
+
+/// Resolve a sorted digest back to the entitlement that produced it, so the
+/// test can claim "whichever leaf sorted first" without assuming which of the
+/// generated addresses that turned out to be.
+fn owner_of(
+    leaf: &BytesN<32>,
+    table: &[(&BytesN<32>, &Address, &BytesN<32>, i128)],
+) -> (Address, BytesN<32>, i128) {
+    for (digest, addr, id, amount) in table {
+        if *digest == leaf {
+            return ((*addr).clone(), (*id).clone(), *amount);
+        }
+    }
+    panic!("sorted leaf is not one of the three built leaves");
+}
+
+/// Decode a 32-byte hex literal, so the vectors above read as the same strings
+/// that appear in the shared JSON rather than as byte arrays nobody can
+/// eyeball against it.
+fn hex32(s: &str) -> [u8; 32] {
+    let bytes = s.as_bytes();
+    assert_eq!(bytes.len(), 64, "expected 64 hex characters");
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = nibble(bytes[i * 2]) << 4 | nibble(bytes[i * 2 + 1]);
+    }
+    out
+}
+
+fn nibble(c: u8) -> u8 {
+    match c {
+        b'0'..=b'9' => c - b'0',
+        b'a'..=b'f' => c - b'a' + 10,
+        b'A'..=b'F' => c - b'A' + 10,
+        _ => panic!("not a hex digit"),
+    }
 }
