@@ -81,6 +81,25 @@ fn setup(sweep_delay: u64) -> Fixture {
     }
 }
 
+#[test]
+fn uninitialised_contract_rejects_config_and_state_reads() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract = env.register_contract(None, GrainhackEscrow);
+    let client = GrainhackEscrowClient::new(&env, &contract);
+
+    let from = Address::generate(&env);
+    assert_eq!(
+        client.try_fund(&Pool::Contributor, &from, &1i128),
+        Err(contract_err(Error::NotInitialised))
+    );
+    assert_eq!(
+        client.try_get_state(),
+        Err(contract_err(Error::NotInitialised))
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The separate-pool guarantee
 // ---------------------------------------------------------------------------
