@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a change. Start with the problem, not the patch.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security reports belong in a [private advisory](https://github.com/Grainlify/Stellar-Contracts/security/advisories/new), not here.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is broken or missing today? Who hits it?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like the contract or tooling to do instead?
+    validations:
+      required: true
