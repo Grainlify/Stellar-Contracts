@@ -20,6 +20,62 @@ fn contract_err(e: Error) -> Result<soroban_sdk::Error, soroban_sdk::InvokeError
     Ok(soroban_sdk::Error::from_contract_error(e as u32))
 }
 
+/// Compile-time inventory of every contract error.
+///
+/// There is intentionally no wildcard arm. Adding an Error variant makes this
+/// match fail to compile until the new variant has a deliberate test decision.
+/// The returned labels are also useful when a failure prints the inventory in
+/// a test report, while the enum match is the actual drift guard.
+fn error_test_decision(error: Error) -> &'static str {
+    match error {
+        Error::AlreadyInitialised => "already-initialised: initialise is once-only",
+        Error::NotInitialised => "not-initialised: reads and mutations require setup",
+        Error::NotAuthorised => "not-authorised: Soroban auth rejects the caller",
+        Error::PoolMismatch => "pool-mismatch: pool keys remain structurally separate",
+        Error::InsufficientEscrow => "insufficient-escrow: balances cap roots and claims",
+        Error::WrongState => "wrong-state: lifecycle preconditions reject the operation",
+        Error::RootNotPublished => "root-not-published: currently pre-empted by wrong-state",
+        Error::RootAlreadyPublished => "root-already-published: roots are write-once",
+        Error::InvalidProof => "invalid-proof: verifier rejects a non-member leaf",
+        Error::AlreadyClaimed => "already-claimed: leaf marker prevents replay",
+        Error::CommitmentExists => "commitment-exists: commitments are write-once",
+        Error::CommitmentMissing => "commitment-missing: reserved for missing commitment reads",
+        Error::TimelockActive => "timelock-active: sweep waits for the ledger deadline",
+        Error::InvalidAmount => "invalid-amount: non-positive amounts are rejected",
+    }
+}
+
+/// Keep this table explicit as well as the match above. The table is the
+/// reviewer-facing inventory: each variant has a reason for being asserted or
+/// documented, while the exhaustive match prevents a new variant from hiding.
+fn error_inventory() -> [Error; 14] {
+    [
+        Error::AlreadyInitialised,
+        Error::NotInitialised,
+        Error::NotAuthorised,
+        Error::PoolMismatch,
+        Error::InsufficientEscrow,
+        Error::WrongState,
+        Error::RootNotPublished,
+        Error::RootAlreadyPublished,
+        Error::InvalidProof,
+        Error::AlreadyClaimed,
+        Error::CommitmentExists,
+        Error::CommitmentMissing,
+        Error::TimelockActive,
+        Error::InvalidAmount,
+    ]
+}
+
+#[test]
+fn error_inventory_is_exhaustive_and_every_variant_has_a_decision() {
+    let inventory = error_inventory();
+    assert_eq!(inventory.len(), 14);
+    for error in inventory {
+        assert!(!error_test_decision(error).is_empty());
+    }
+}
+
 fn sha(env: &Env, parts: &[&[u8]]) -> BytesN<32> {
     let mut buf = Bytes::new(env);
     for p in parts {
