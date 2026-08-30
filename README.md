@@ -55,6 +55,21 @@ cargo test
 cargo build --target wasm32-unknown-unknown --release
 ```
 
+## Artifact metadata
+
+The release wasm embeds its name, Cargo version, contract description, license,
+canonical repository, and package name using Soroban's `contractmeta!` macro.
+Inspect the compiled artifact—not only the source—with:
+
+```sh
+scripts/inspect-contract-metadata.sh
+```
+
+The helper prints the verified metadata, wasm size, and SHA-256 digest. It can
+also inspect an existing artifact with `--wasm` or emit a CI-friendly report
+with `--json`. See [the metadata release policy](docs/CONTRACT-METADATA.md)
+for the release checklist and size-reporting guidance.
+
 ## Not done here
 
 Deployment, funding, key handling and mainnet operations are human tasks and
