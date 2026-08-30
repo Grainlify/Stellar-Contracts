@@ -6,17 +6,14 @@
 extern crate std;
 
 use super::*;
+use serde::{Deserialize, Serialize};
 use soroban_sdk::{
     testutils::{Address as _, EnvTestConfig, Events, Ledger as _},
     token, vec, Address, Bytes, BytesN, Env, IntoVal,
 };
-use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    env,
-    eprintln,
-    format,
-    fs,
+    env, eprintln, format, fs,
     path::Path,
     println,
     string::{String, ToString},
@@ -1266,14 +1263,18 @@ fn measure_initialise() -> ResourceMeasurement {
     let contract = env.register_contract(None, GrainhackEscrow);
     let client = GrainhackEscrowClient::new(&env, &contract);
 
-    measure(&env, || client.initialise(&admin, &token, &sweep_dest, &604_800u64))
+    measure(&env, || {
+        client.initialise(&admin, &token, &sweep_dest, &604_800u64)
+    })
 }
 
 fn measure_fund() -> ResourceMeasurement {
     let f = resource_setup(0);
     let env = &f.env;
     let client = &f.client;
-    measure(env, || client.fund(&Pool::Contributor, &f.sponsor, &100i128))
+    measure(env, || {
+        client.fund(&Pool::Contributor, &f.sponsor, &100i128)
+    })
 }
 
 fn measure_commit() -> ResourceMeasurement {
@@ -1305,7 +1306,9 @@ fn measure_publish_root() -> ResourceMeasurement {
     let root = BytesN::from_array(&f.env, &[1u8; 32]);
     let env = &f.env;
     let client = &f.client;
-    measure(env, || client.publish_root(&Pool::Contributor, &root, &100i128))
+    measure(env, || {
+        client.publish_root(&Pool::Contributor, &root, &100i128)
+    })
 }
 
 fn measure_claim(depth: usize) -> ResourceMeasurement {
@@ -1313,7 +1316,9 @@ fn measure_claim(depth: usize) -> ResourceMeasurement {
     let claimant = Address::generate(&f.env);
     let identity = BytesN::from_array(&f.env, &[0x11u8; 32]);
     f.client.fund(&Pool::Contributor, &f.sponsor, &100i128);
-    let leaf = f.client.leaf(&Pool::Contributor, &claimant, &identity, &100i128);
+    let leaf = f
+        .client
+        .leaf(&Pool::Contributor, &claimant, &identity, &100i128);
     let mut proof = Vec::new(&f.env);
     let mut root = leaf.clone();
     for index in 0..depth {
@@ -1324,7 +1329,9 @@ fn measure_claim(depth: usize) -> ResourceMeasurement {
     f.client.publish_root(&Pool::Contributor, &root, &100i128);
     let env = &f.env;
     let client = &f.client;
-    measure(env, || client.claim(&Pool::Contributor, &claimant, &identity, &100i128, &proof))
+    measure(env, || {
+        client.claim(&Pool::Contributor, &claimant, &identity, &100i128, &proof)
+    })
 }
 
 fn measure_is_claimed() -> ResourceMeasurement {
@@ -1429,9 +1436,12 @@ fn assert_within_baseline(name: &str, actual: u64, baseline: u64, tolerance: u64
 
 #[test]
 fn public_entry_points_stay_within_resource_baseline() {
-    let baseline: ResourceBaseline = serde_json::from_str(RESOURCE_BASELINE)
-        .expect("resource_baseline.json must be valid JSON");
-    assert_eq!(baseline.schema_version, 1, "unsupported resource baseline schema");
+    let baseline: ResourceBaseline =
+        serde_json::from_str(RESOURCE_BASELINE).expect("resource_baseline.json must be valid JSON");
+    assert_eq!(
+        baseline.schema_version, 1,
+        "unsupported resource baseline schema"
+    );
     let actual = resource_measurements();
 
     for (name, measurement) in actual {
@@ -1467,7 +1477,9 @@ fn public_entry_points_stay_within_resource_baseline() {
             "size bytes",
         );
     } else {
-        eprintln!("resource guard: wasm size check skipped; use scripts/check-resource-regressions.sh");
+        eprintln!(
+            "resource guard: wasm size check skipped; use scripts/check-resource-regressions.sh"
+        );
     }
 }
 
@@ -1478,8 +1490,8 @@ fn public_entry_points_stay_within_resource_baseline() {
 fn write_resource_baseline() {
     let output = env::var("RESOURCE_BASELINE_OUTPUT")
         .expect("RESOURCE_BASELINE_OUTPUT is required when regenerating the baseline");
-    let wasm_path = env::var("WASM_PATH")
-        .expect("WASM_PATH is required when regenerating the baseline");
+    let wasm_path =
+        env::var("WASM_PATH").expect("WASM_PATH is required when regenerating the baseline");
     let baseline = ResourceBaseline {
         schema_version: 1,
         tolerance_percent: 10,
