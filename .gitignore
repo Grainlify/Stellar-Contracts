@@ -12,3 +12,8 @@ target/
 # intentionally local. Copy only reviewed, non-secret metadata into docs.
 deployments/testnet/*.json
 deployments/testnet/*.wasm
+
+# The explicit baseline-writer test is a local maintenance command; its SDK
+# snapshots are not part of the checked-in regression fixture.
+contracts/grainhack-escrow/test_snapshots/test/write_resource_baseline.*.json
+contracts/grainhack-escrow/test_snapshots/test/public_entry_points_stay_within_resource_baseline.*.json
