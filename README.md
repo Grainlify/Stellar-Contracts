@@ -1,7 +1,9 @@
 # Grainlify Stellar Contracts
 
-Soroban contracts for GrainHack. Companion to `Grainily_onchain_spec.md` in the
-main repo.
+Soroban contracts for GrainHack. The contract-side protocol is documented in
+[`docs/MERKLE_LEAF_FORMAT.md`](docs/MERKLE_LEAF_FORMAT.md); that document is
+self-contained and uses `contracts/grainhack-escrow/src/lib.rs` as its source
+of truth.
 
 ## `grainhack-escrow`
 
@@ -36,24 +38,48 @@ leaves an event half-paid with no clean recovery.
 ### Leaf format
 
 ```
-leaf = SHA256( 0x00 || pool || claimant_address || identity_hash || amount_be )
+leaf = SHA256(
+  0x00 || pool_byte || address_length_be16 || claimant_address_utf8
+  || identity_hash_32 || amount_be32
+)
 ```
 
-`identity_hash` is `SHA256(github_login_lower || per_event_salt)`, computed
-off-chain. **The salt is never published** — releasing it would let anyone with
-a list of GitHub logins match leaves to addresses and reconstruct the
-`github_login → wallet` mapping the design exists to prevent. See §4 of the
-spec.
+The fields are concatenated in exactly this order before SHA-256:
 
-The backend builds identical leaves in `internal/chain/merkle.go`, pinned by a
-golden fixture so the two implementations cannot drift.
+| Field | Encoding | Width |
+|---|---|---:|
+| Domain prefix | `0x00` | 1 byte |
+| Pool | `Contributor = 0x00`, `Maintainer = 0x01` | 1 byte |
+| Address length | Unsigned big-endian byte length | 2 bytes |
+| Claimant | Canonical Soroban `Address::to_string()` bytes | length above |
+| Identity hash | The 32 raw bytes of `identity_hash` | 32 bytes |
+| Amount | Positive `i128`, zero-extended and right-aligned | 32 bytes |
+
+The address length covers only the address bytes, not the two-byte prefix. The
+amount is fixed-width big-endian, so a client must reject non-positive amounts
+before encoding. `identity_hash` is `SHA256(github_login_lower ||
+per_event_salt)`, computed off-chain. **The salt is never published** —
+releasing it would let anyone with a list of GitHub logins match leaves to
+addresses and reconstruct the `github_login → wallet` mapping the design
+exists to prevent.
+
+The backend must build identical leaves and use the same sorted-pair tree rules.
+The contract exposes `leaf` so an integration can compare its implementation
+against the contract-side construction. Internal nodes use
+`SHA256(0x01 || lower_digest || higher_digest)` with the two 32-byte digests in
+lexicographic order. See the complete [leaf and tree format guide](docs/MERKLE_LEAF_FORMAT.md).
 
 ## Build and test
 
 ```sh
 cargo test
 cargo build --target wasm32-unknown-unknown --release
+stellar contract build
 ```
+
+The repository pins Rust and the wasm target in `rust-toolchain.toml`. The
+same commands, plus formatting and clippy with warnings denied, run in
+`.github/workflows/ci.yml`. `stellar contract build` requires the Stellar CLI.
 
 ## Artifact metadata
 
