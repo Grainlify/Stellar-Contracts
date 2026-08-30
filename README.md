@@ -55,6 +55,33 @@ cargo test
 cargo build --target wasm32-unknown-unknown --release
 ```
 
+## Deploy to testnet
+
+The repository includes a repeatable, testnet-only deployment command. It
+builds the contract, uploads the wasm, creates an instance, calls
+`initialise`, and writes the resulting IDs and configuration to a local JSON
+record. The four initialise values are deliberately supplied by the caller:
+
+```sh
+scripts/deploy-testnet.sh \
+  --network testnet \
+  --source-account grainlify-deployer \
+  --admin G... \
+  --token C... \
+  --sweep-dest G... \
+  --sweep-delay 604800
+```
+
+The source identity must already be configured and funded on testnet. The
+script refuses an unset or non-testnet network, validates the account before
+submitting transactions, and refuses to reuse an existing deployment record
+unless `--replace` is supplied. It never prints or writes a secret key.
+
+The generated record is ignored by Git because testnet addresses are
+environment-specific. Testnet is periodically reset, so a recorded contract
+ID is a deployment receipt rather than a permanent address. Use `--help` for
+equivalent environment-variable names and output-path options.
+
 ## Not done here
 
 Deployment, funding, key handling and mainnet operations are human tasks and
