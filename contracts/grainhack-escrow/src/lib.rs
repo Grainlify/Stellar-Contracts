@@ -422,14 +422,29 @@ impl GrainhackEscrow {
     // Reads
     // -----------------------------------------------------------------------
 
+    /// Returns the escrowed balance for `pool`.
+    ///
+    /// Reads `Key::Balance(pool)` from instance storage. Unlike the other
+    /// accessors, this does **not** panic if the contract is uninitialised —
+    /// it delegates to `balance_of`, which uses `unwrap_or(0)` and returns `0`
+    /// rather than `Error::NotInitialised`. A return value of `0` therefore
+    /// does not distinguish "empty pool" from "not set up".
     pub fn balance(env: Env, pool: Pool) -> i128 {
         Self::balance_of(&env, pool)
     }
 
+    /// Returns the current escrow `State`.
+    ///
+    /// Reads `Key::State` from instance storage. Panics with
+    /// `Error::NotInitialised` if the contract has not been initialised.
     pub fn get_state(env: Env) -> State {
         Self::state(&env)
     }
 
+    /// Returns the published Merkle root for `pool`, if any.
+    ///
+    /// Reads `Key::Root(pool)` from persistent storage. Returns `None` when
+    /// no root has been published for the given pool.
     pub fn get_root(env: Env, pool: Pool) -> Option<BytesN<32>> {
         env.storage().persistent().get(&Key::Root(pool))
     }
