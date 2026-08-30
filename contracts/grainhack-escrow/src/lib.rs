@@ -18,9 +18,23 @@
 //! recovery, and pushing requires holding everyone's address.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short,
+    contract, contracterror, contractimpl, contractmeta, contracttype, panic_with_error, symbol_short,
     token, Address, Bytes, BytesN, Env, Symbol, Vec,
 };
+
+// Embed a small, stable identity in every release artifact. The description
+// deliberately matches the README. Soroban metadata values must be literals;
+// the release helper compares this version with Cargo before inspection so a
+// rebuilt wasm cannot silently advertise a stale release number.
+contractmeta!(key = "name", val = "GrainHack escrow");
+contractmeta!(key = "version", val = "0.1.0");
+contractmeta!(
+    key = "description",
+    val = "Holds GrainHack prize pools, publishes commitments, and honours pull-based Merkle claims."
+);
+contractmeta!(key = "license", val = "MIT");
+contractmeta!(key = "repository", val = "https://github.com/Grainlify/Stellar-Contracts");
+contractmeta!(key = "contract", val = "grainhack-escrow");
 
 // ---------------------------------------------------------------------------
 // Domain separation
