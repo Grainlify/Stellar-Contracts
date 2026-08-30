@@ -631,6 +631,71 @@ fn root_from_digests(env: &Env, digests: &[BytesN<32>]) -> BytesN<32> {
     level[0].clone()
 }
 
+/// Build the proof path for one digest using the exact tree construction used
+/// by `root_from_digests` and by the contract verifier.
+///
+/// The target is tracked by value rather than by its original input index,
+/// because the canonical tree first sorts all leaves by digest. When an odd
+/// level promotes its final node, that node contributes no sibling at that
+/// level; the verifier consequently consumes no proof element for it. This is
+/// the subtle case a hand-built helper tends to get wrong.
+fn proof_for_leaf(env: &Env, digests: &[BytesN<32>], target: &BytesN<32>) -> std::vec::Vec<BytesN<32>> {
+    assert!(!digests.is_empty(), "a Merkle tree needs at least one leaf");
+    assert!(digests.iter().any(|digest| digest == target), "target is not a leaf");
+
+    let mut level = digests.to_vec();
+    level.sort_by_key(|digest| digest.to_array());
+    assert!(
+        level.windows(2).all(|pair| pair[0] != pair[1]),
+        "duplicate leaves make a digest target ambiguous"
+    );
+    let mut current = target.clone();
+    let mut proof = std::vec::Vec::new();
+
+    while level.len() > 1 {
+        let index = level
+            .iter()
+            .position(|digest| digest == &current)
+            .expect("target must remain in every tree level");
+
+        let promoted = level.len() % 2 == 1 && index + 1 == level.len();
+        if !promoted {
+            proof.push(level[if index % 2 == 0 { index + 1 } else { index - 1 }].clone());
+        }
+
+        let mut next = std::vec::Vec::new();
+        let mut i = 0usize;
+        while i < level.len() {
+            if i + 1 == level.len() {
+                next.push(level[i].clone());
+            } else {
+                next.push(node(env, &level[i], &level[i + 1]));
+            }
+            i += 2;
+        }
+
+        current = if promoted {
+            level[index].clone()
+        } else {
+            next[index / 2].clone()
+        };
+        level = next;
+    }
+
+    proof
+}
+
+/// Convert a standard test vector into the contract SDK vector used by the
+/// generated client. Keeping this adapter in tests makes the proof algorithm
+/// easy to inspect and keeps all Soroban allocation at the call boundary.
+fn sdk_proof(env: &Env, proof: &[BytesN<32>]) -> Vec<BytesN<32>> {
+    let mut result = Vec::new(env);
+    for sibling in proof {
+        result.push_back(sibling.clone());
+    }
+    result
+}
+
 /// The tree, pinned across implementations - the leaf already was, the tree was
 /// not.
 ///
@@ -723,6 +788,13 @@ fn a_claim_verifies_through_a_promoted_node_in_an_odd_tree() {
         "the hand-built odd tree disagrees with the vector builder"
     );
 
+    let generated = proof_for_leaf(&f.env, &[la.clone(), lb.clone(), lc.clone()], &sorted[0]);
+    assert_eq!(
+        generated,
+        std::vec![sorted[1].clone(), sorted[2].clone()],
+        "generated proof must agree with the retained hand-built proof"
+    );
+
     f.client.publish_root(&Pool::Contributor, &root, &600i128);
 
     // s0's path is [s1, promoted s2]: the second step folds in a node that was
@@ -744,6 +816,222 @@ fn a_claim_verifies_through_a_promoted_node_in_an_odd_tree() {
     let token_client = token::Client::new(&f.env, &f.token);
     assert_eq!(token_client.balance(&claimant), amount);
     assert!(f.client.is_claimed(&sorted[0]));
+}
+
+/// Every leaf in a variety of tree sizes must produce a path that reaches the
+/// same root. This exercises even, odd, power-of-two and non-power-of-two
+/// levels without relying on a claim-specific fixture for each shape.
+#[test]
+fn generated_proofs_verify_for_all_leaves_in_many_tree_shapes() {
+    for count in 1u16..=64 {
+        // Soroban's test host has a finite per-environment budget. A fresh
+        // environment per shape keeps this exhaustive matrix representative
+        // without hiding a budget failure in the proof algorithm itself.
+        let env = Env::default();
+        let leaves: std::vec::Vec<BytesN<32>> =
+            (0..count).map(|index| synth_leaf(&env, index)).collect();
+        let root = root_from_digests(&env, &leaves);
+
+        for target in &leaves {
+            let proof = proof_for_leaf(&env, &leaves, target);
+            let sdk_path = sdk_proof(&env, &proof);
+            assert!(
+                GrainhackEscrow::verify_proof(&env, &root, target, &sdk_path),
+                "proof failed for count={} target={:?} path_len={}",
+                count,
+                target,
+                proof.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn a_single_leaf_has_an_empty_proof() {
+    let env = Env::default();
+    let leaf = synth_leaf(&env, 0);
+    assert!(proof_for_leaf(&env, std::slice::from_ref(&leaf), &leaf).is_empty());
+    assert!(GrainhackEscrow::verify_proof(
+        &env,
+        &leaf,
+        &leaf,
+        &sdk_proof(&env, &[]),
+    ));
+}
+
+#[test]
+fn proof_generation_is_independent_of_input_order() {
+    let env = Env::default();
+    let canonical: std::vec::Vec<BytesN<32>> = (0..17).map(|i| synth_leaf(&env, i)).collect();
+    let mut shuffled = canonical.clone();
+    shuffled.reverse();
+    let root = root_from_digests(&env, &canonical);
+
+    for target in &canonical {
+        assert_eq!(
+            proof_for_leaf(&env, &canonical, target),
+            proof_for_leaf(&env, &shuffled, target),
+            "proof changed when input order changed"
+        );
+        assert!(GrainhackEscrow::verify_proof(
+            &env,
+            &root,
+            target,
+            &sdk_proof(&env, &proof_for_leaf(&env, &shuffled, target)),
+        ));
+    }
+}
+
+#[test]
+#[should_panic(expected = "target is not a leaf")]
+fn proof_generation_rejects_an_unknown_target() {
+    let env = Env::default();
+    let leaves = std::vec![synth_leaf(&env, 0), synth_leaf(&env, 1)];
+    let unknown = synth_leaf(&env, 99);
+    let _ = proof_for_leaf(&env, &leaves, &unknown);
+}
+
+#[test]
+#[should_panic(expected = "duplicate leaves make a digest target ambiguous")]
+fn proof_generation_rejects_duplicate_leaves() {
+    let env = Env::default();
+    let leaf = synth_leaf(&env, 0);
+    let _ = proof_for_leaf(&env, &[leaf.clone(), leaf.clone()], &leaf);
+}
+
+#[test]
+fn generated_paths_have_expected_lengths_for_complete_trees() {
+    let env = Env::default();
+    for count in [1u16, 2, 4, 8, 16, 32, 64] {
+        let leaves: std::vec::Vec<BytesN<32>> =
+            (0..count).map(|index| synth_leaf(&env, index)).collect();
+        let expected = (count as usize).ilog2() as usize;
+        for leaf in &leaves {
+            assert_eq!(proof_for_leaf(&env, &leaves, leaf).len(), expected);
+        }
+    }
+}
+
+#[test]
+fn promoted_nodes_reduce_paths_only_at_their_odd_levels() {
+    let env = Env::default();
+    for count in [3u16, 5, 6, 7, 9, 10, 17, 24, 38] {
+        let leaves: std::vec::Vec<BytesN<32>> =
+            (0..count).map(|index| synth_leaf(&env, index)).collect();
+        let root = root_from_digests(&env, &leaves);
+        let paths: std::vec::Vec<usize> = leaves
+            .iter()
+            .map(|leaf| {
+                let proof = proof_for_leaf(&env, &leaves, leaf);
+                assert!(GrainhackEscrow::verify_proof(
+                    &env,
+                    &root,
+                    leaf,
+                    &sdk_proof(&env, &proof),
+                ));
+                proof.len()
+            })
+            .collect();
+        let complete_tree_height = (count as usize).next_power_of_two().ilog2() as usize;
+        assert!(paths.iter().all(|length| *length <= complete_tree_height));
+        assert!(paths.iter().any(|length| *length < complete_tree_height));
+    }
+}
+
+#[test]
+fn changing_any_generated_sibling_breaks_the_proof() {
+    let env = Env::default();
+    let leaves: std::vec::Vec<BytesN<32>> = (0..13).map(|index| synth_leaf(&env, index)).collect();
+    let root = root_from_digests(&env, &leaves);
+    let target = &leaves[4];
+    let proof = proof_for_leaf(&env, &leaves, target);
+    assert!(!proof.is_empty());
+
+    for index in 0..proof.len() {
+        let mut corrupted = proof.clone();
+        corrupted[index] = synth_leaf(&env, 10_000 + index as u16);
+        assert!(
+            !GrainhackEscrow::verify_proof(&env, &root, target, &sdk_proof(&env, &corrupted)),
+            "corrupted sibling at index {} unexpectedly verified",
+            index
+        );
+    }
+}
+
+#[test]
+fn removing_a_required_sibling_breaks_non_promoted_paths() {
+    let env = Env::default();
+    let leaves: std::vec::Vec<BytesN<32>> = (0..12).map(|index| synth_leaf(&env, index)).collect();
+    let root = root_from_digests(&env, &leaves);
+    let target = &leaves[0];
+    let proof = proof_for_leaf(&env, &leaves, target);
+    assert!(proof.len() > 1);
+    let shortened = &proof[..proof.len() - 1];
+    assert!(!GrainhackEscrow::verify_proof(
+        &env,
+        &root,
+        target,
+        &sdk_proof(&env, shortened),
+    ));
+}
+
+#[test]
+fn generated_proofs_cover_unsorted_random_like_inputs() {
+    let env = Env::default();
+    let inputs: std::vec::Vec<BytesN<32>> = [31u16, 4, 19, 0, 27, 8, 14, 23, 2, 35, 11, 6, 29, 16, 21]
+        .iter()
+        .map(|index| synth_leaf(&env, *index))
+        .collect();
+    let root = root_from_digests(&env, &inputs);
+    for target in &inputs {
+        let proof = proof_for_leaf(&env, &inputs, target);
+        assert!(GrainhackEscrow::verify_proof(
+            &env,
+            &root,
+            target,
+            &sdk_proof(&env, &proof),
+        ));
+    }
+}
+
+/// A 24-leaf claim is intentionally larger than the hand-assembled examples.
+/// The proof is generated from the same leaf set that is published, then
+/// accepted by the real contract entry point. This catches a helper that can
+/// reproduce roots but omits or duplicates a promoted sibling in a claim path.
+#[test]
+fn a_large_generated_proof_claims_successfully() {
+    let f = setup(0);
+    let mut claimants = std::vec::Vec::new();
+    let mut identities = std::vec::Vec::new();
+    let mut leaves = std::vec::Vec::new();
+    let amount = 25i128;
+
+    for index in 0u8..24 {
+        let claimant = Address::generate(&f.env);
+        let identity = BytesN::from_array(&f.env, &[index; 32]);
+        let leaf = f.client.leaf(&Pool::Contributor, &claimant, &identity, &amount);
+        claimants.push(claimant);
+        identities.push(identity);
+        leaves.push(leaf);
+    }
+
+    f.client.fund(&Pool::Contributor, &f.sponsor, &(amount * 24));
+    let root = root_from_digests(&f.env, &leaves);
+    f.client.publish_root(&Pool::Contributor, &root, &(amount * 24));
+
+    let target_index = 17usize;
+    let proof = proof_for_leaf(&f.env, &leaves, &leaves[target_index]);
+    f.client.claim(
+        &Pool::Contributor,
+        &claimants[target_index],
+        &identities[target_index],
+        &amount,
+        &sdk_proof(&f.env, &proof),
+    );
+
+    assert!(f.client.is_claimed(&leaves[target_index]));
+    assert_eq!(token::Client::new(&f.env, &f.token).balance(&claimants[target_index]), amount);
+    assert_eq!(f.client.balance(&Pool::Contributor), amount * 23);
 }
 
 /// Resolve a sorted digest back to the entitlement that produced it, so the
