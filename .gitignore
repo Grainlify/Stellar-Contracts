@@ -7,3 +7,8 @@ target/
 # session ran `git add -A` here and missed only because the directory did not
 # exist yet.
 .worktrees/
+
+# Testnet deployment records contain environment-specific addresses and are
+# intentionally local. Copy only reviewed, non-secret metadata into docs.
+deployments/testnet/*.json
+deployments/testnet/*.wasm
