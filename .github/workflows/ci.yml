@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  verify:
+    name: Build, test, lint, format, and wasm artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-rust-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-${{ hashFiles('**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml') }}-
+            ${{ runner.os }}-rust-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Build native workspace
+        run: cargo build --workspace --all-targets
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets
+
+      - name: Run clippy with warnings denied
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build release wasm
+        run: cargo build -p grainhack-escrow --target wasm32-unknown-unknown --release
+
+      - name: Report wasm artifact size
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(target/wasm32-unknown-unknown/release/*.wasm)
+          if (( ${#artifacts[@]} == 0 )); then
+            echo "No wasm artifact was produced" >&2
+            exit 1
+          fi
+          for artifact in "${artifacts[@]}"; do
+            bytes="$(wc -c < "$artifact" | tr -d '[:space:]')"
+            sha="$(sha256sum "$artifact" | cut -d ' ' -f 1)"
+            echo "wasm: $artifact"
+            echo "size_bytes: $bytes"
+            echo "sha256: $sha"
+          done
