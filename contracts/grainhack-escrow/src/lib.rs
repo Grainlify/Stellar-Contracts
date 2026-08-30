@@ -18,8 +18,8 @@
 //! recovery, and pushing requires holding everyone's address.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contractmeta, contracttype, panic_with_error, symbol_short,
-    token, Address, Bytes, BytesN, Env, Symbol, Vec,
+    contract, contracterror, contractimpl, contractmeta, contracttype, panic_with_error,
+    symbol_short, token, Address, Bytes, BytesN, Env, Symbol, Vec,
 };
 
 // Embed a small, stable identity in every release artifact. The description
@@ -30,10 +30,14 @@ contractmeta!(key = "name", val = "GrainHack escrow");
 contractmeta!(key = "version", val = "0.1.0");
 contractmeta!(
     key = "description",
-    val = "Holds GrainHack prize pools, publishes commitments, and honours pull-based Merkle claims."
+    val =
+        "Holds GrainHack prize pools, publishes commitments, and honours pull-based Merkle claims."
 );
 contractmeta!(key = "license", val = "MIT");
-contractmeta!(key = "repository", val = "https://github.com/Grainlify/Stellar-Contracts");
+contractmeta!(
+    key = "repository",
+    val = "https://github.com/Grainlify/Stellar-Contracts"
+);
 contractmeta!(key = "contract", val = "grainhack-escrow");
 
 // ---------------------------------------------------------------------------
@@ -182,11 +186,17 @@ impl GrainhackEscrow {
             },
         );
         env.storage().instance().set(&Key::State, &State::Open);
-        env.storage().instance().set(&Key::Balance(Pool::Contributor), &0i128);
-        env.storage().instance().set(&Key::Balance(Pool::Maintainer), &0i128);
+        env.storage()
+            .instance()
+            .set(&Key::Balance(Pool::Contributor), &0i128);
+        env.storage()
+            .instance()
+            .set(&Key::Balance(Pool::Maintainer), &0i128);
 
-        env.events()
-            .publish((symbol_short!("init"),), (admin, token, sweep_dest, sweep_delay));
+        env.events().publish(
+            (symbol_short!("init"),),
+            (admin, token, sweep_dest, sweep_delay),
+        );
     }
 
     /// Fund one pool. Called once per pool, or repeatedly to top up.
@@ -213,10 +223,10 @@ impl GrainhackEscrow {
             &amount,
         );
 
-        let balance = Self::balance_of(&env, pool.clone());
+        let balance = Self::balance_of(&env, pool);
         env.storage()
             .instance()
-            .set(&Key::Balance(pool.clone()), &(balance + amount));
+            .set(&Key::Balance(pool), &(balance + amount));
         env.storage().instance().set(&Key::State, &State::Funded);
 
         env.events()
@@ -241,14 +251,15 @@ impl GrainhackEscrow {
         }
         env.storage().persistent().set(&key, &value);
 
-        env.events()
-            .publish((symbol_short!("commit"), kind), value);
+        env.events().publish((symbol_short!("commit"), kind), value);
     }
 
     /// Read a commitment back. Returns `None` when absent, so a verifier can
     /// distinguish "never committed" from "committed to zero".
     pub fn get_commitment(env: Env, kind: Symbol, subject: Bytes) -> Option<BytesN<32>> {
-        env.storage().persistent().get(&Key::Commitment(kind, subject))
+        env.storage()
+            .persistent()
+            .get(&Key::Commitment(kind, subject))
     }
 
     /// Publish a pool's Merkle claim root.
@@ -270,7 +281,7 @@ impl GrainhackEscrow {
         if total <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        if env.storage().persistent().has(&Key::Root(pool.clone())) {
+        if env.storage().persistent().has(&Key::Root(pool)) {
             panic_with_error!(&env, Error::RootAlreadyPublished);
         }
         let state = Self::state(&env);
@@ -281,15 +292,15 @@ impl GrainhackEscrow {
         // The escrow must already hold what the root promises. Publishing a
         // root larger than the balance would mean the last claimants find
         // nothing left, having been told on-chain that they were owed it.
-        let balance = Self::balance_of(&env, pool.clone());
+        let balance = Self::balance_of(&env, pool);
         if total > balance {
             panic_with_error!(&env, Error::InsufficientEscrow);
         }
 
-        env.storage().persistent().set(&Key::Root(pool.clone()), &root);
+        env.storage().persistent().set(&Key::Root(pool), &root);
         env.storage()
             .persistent()
-            .set(&Key::RootTotal(pool.clone()), &total);
+            .set(&Key::RootTotal(pool), &total);
         env.storage().instance().set(&Key::State, &State::Settled);
 
         // The sweep clock starts at settlement, not at funding.
@@ -331,7 +342,7 @@ impl GrainhackEscrow {
         let root: BytesN<32> = env
             .storage()
             .persistent()
-            .get(&Key::Root(pool.clone()))
+            .get(&Key::Root(pool))
             .unwrap_or_else(|| panic_with_error!(&env, Error::RootNotPublished));
 
         // The leaf binds the identity hash, the claiming address and the
@@ -347,16 +358,18 @@ impl GrainhackEscrow {
             panic_with_error!(&env, Error::InvalidProof);
         }
 
-        let balance = Self::balance_of(&env, pool.clone());
+        let balance = Self::balance_of(&env, pool);
         if amount > balance {
             panic_with_error!(&env, Error::InsufficientEscrow);
         }
 
         // Mark before transferring.
-        env.storage().persistent().set(&Key::Claimed(leaf.clone()), &true);
+        env.storage()
+            .persistent()
+            .set(&Key::Claimed(leaf.clone()), &true);
         env.storage()
             .instance()
-            .set(&Key::Balance(pool.clone()), &(balance - amount));
+            .set(&Key::Balance(pool), &(balance - amount));
 
         token::Client::new(&env, &cfg.token).transfer(
             &env.current_contract_address(),
@@ -371,7 +384,10 @@ impl GrainhackEscrow {
     /// Whether a leaf has been claimed. Public so the backend's reconciliation
     /// job can compare on-chain state against `claim_leaves` (§8).
     pub fn is_claimed(env: Env, leaf: BytesN<32>) -> bool {
-        env.storage().persistent().get(&Key::Claimed(leaf)).unwrap_or(false)
+        env.storage()
+            .persistent()
+            .get(&Key::Claimed(leaf))
+            .unwrap_or(false)
     }
 
     /// Cancel before settlement, opening the refund path.
@@ -423,12 +439,12 @@ impl GrainhackEscrow {
             panic_with_error!(&env, Error::TimelockActive);
         }
 
-        let balance = Self::balance_of(&env, pool.clone());
+        let balance = Self::balance_of(&env, pool);
         if balance <= 0 {
             return 0;
         }
 
-        env.storage().instance().set(&Key::Balance(pool.clone()), &0i128);
+        env.storage().instance().set(&Key::Balance(pool), &0i128);
         token::Client::new(&env, &cfg.token).transfer(
             &env.current_contract_address(),
             &cfg.sweep_dest,
@@ -507,7 +523,10 @@ impl GrainhackEscrow {
     }
 
     fn balance_of(env: &Env, pool: Pool) -> i128 {
-        env.storage().instance().get(&Key::Balance(pool)).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&Key::Balance(pool))
+            .unwrap_or(0)
     }
 
     /// `leaf = H(0x00 || pool || len(address) || address || identity_hash || amount_be32)`

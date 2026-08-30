@@ -11,7 +11,6 @@ use soroban_sdk::{
     token, vec, Address, Bytes, BytesN, Env, IntoVal,
 };
 
-
 /// The contract panics with `panic_with_error!`, so a `try_*` call surfaces a
 /// `soroban_sdk::Error` carrying the contract-error code rather than the enum
 /// itself. This converts one for comparison, so tests still read in terms of
@@ -175,7 +174,9 @@ fn pools_are_separate_balances() {
     // 1000 in total. This is the assertion that would fail if the two were
     // ever collapsed into one balance.
     let root = BytesN::from_array(&f.env, &[7u8; 32]);
-    let res = f.client.try_publish_root(&Pool::Maintainer, &root, &500i128);
+    let res = f
+        .client
+        .try_publish_root(&Pool::Maintainer, &root, &500i128);
     assert_eq!(res, Err(contract_err(Error::InsufficientEscrow)));
 }
 
@@ -194,17 +195,14 @@ fn a_leaf_from_one_pool_cannot_claim_from_the_other() {
     f.client.fund(&Pool::Contributor, &f.sponsor, &1_000i128);
     f.client.fund(&Pool::Maintainer, &f.sponsor, &1_000i128);
     // Publish the *contributor* leaf as the maintainer root.
-    f.client.publish_root(&Pool::Maintainer, &contributor_leaf, &100i128);
+    f.client
+        .publish_root(&Pool::Maintainer, &contributor_leaf, &100i128);
 
     // Claiming from the maintainer pool builds a maintainer leaf, which does
     // not match the root that was published from a contributor leaf.
-    let res = f.client.try_claim(
-        &Pool::Maintainer,
-        &alice,
-        &id,
-        &100i128,
-        &vec![&f.env],
-    );
+    let res = f
+        .client
+        .try_claim(&Pool::Maintainer, &alice, &id, &100i128, &vec![&f.env]);
     assert_eq!(res, Err(contract_err(Error::InvalidProof)));
 }
 
@@ -229,7 +227,13 @@ fn claim_pays_once_and_only_once() {
 
     let token_client = token::Client::new(&f.env, &f.token);
 
-    f.client.claim(&Pool::Contributor, &alice, &id_a, &100i128, &vec![&f.env, leaf_b.clone()]);
+    f.client.claim(
+        &Pool::Contributor,
+        &alice,
+        &id_a,
+        &100i128,
+        &vec![&f.env, leaf_b.clone()],
+    );
     assert_eq!(token_client.balance(&alice), 100);
     assert_eq!(f.client.balance(&Pool::Contributor), 200);
     assert!(f.client.is_claimed(&leaf_a));
@@ -245,7 +249,13 @@ fn claim_pays_once_and_only_once() {
     assert_eq!(res, Err(contract_err(Error::AlreadyClaimed)));
     assert_eq!(token_client.balance(&alice), 100);
 
-    f.client.claim(&Pool::Contributor, &bob, &id_b, &200i128, &vec![&f.env, leaf_a]);
+    f.client.claim(
+        &Pool::Contributor,
+        &bob,
+        &id_b,
+        &200i128,
+        &vec![&f.env, leaf_a],
+    );
     assert_eq!(token_client.balance(&bob), 200);
     assert_eq!(f.client.balance(&Pool::Contributor), 0);
 }
@@ -341,7 +351,9 @@ fn claiming_before_a_root_is_published_fails() {
     let id = BytesN::from_array(&f.env, &[1u8; 32]);
     f.client.fund(&Pool::Contributor, &f.sponsor, &100i128);
 
-    let res = f.client.try_claim(&Pool::Contributor, &alice, &id, &100i128, &vec![&f.env]);
+    let res = f
+        .client
+        .try_claim(&Pool::Contributor, &alice, &id, &100i128, &vec![&f.env]);
     assert_eq!(res, Err(contract_err(Error::WrongState)));
 }
 
@@ -361,7 +373,10 @@ fn commitments_are_write_once() {
     let second = BytesN::from_array(&f.env, &[2u8; 32]);
 
     f.client.commit(&kind, &subject, &first);
-    assert_eq!(f.client.get_commitment(&kind, &subject), Some(first.clone()));
+    assert_eq!(
+        f.client.get_commitment(&kind, &subject),
+        Some(first.clone())
+    );
 
     let res = f.client.try_commit(&kind, &subject, &second);
     assert_eq!(res, Err(contract_err(Error::CommitmentExists)));
@@ -407,7 +422,9 @@ fn a_root_larger_than_the_escrow_is_refused() {
     f.client.fund(&Pool::Contributor, &f.sponsor, &100i128);
     let root = BytesN::from_array(&f.env, &[1u8; 32]);
 
-    let res = f.client.try_publish_root(&Pool::Contributor, &root, &101i128);
+    let res = f
+        .client
+        .try_publish_root(&Pool::Contributor, &root, &101i128);
     assert_eq!(res, Err(contract_err(Error::InsufficientEscrow)));
 }
 
@@ -538,8 +555,14 @@ fn a_failed_initialise_emits_no_event() {
 #[test]
 fn funding_zero_or_negative_is_refused() {
     let f = setup(0);
-    assert_eq!(f.client.try_fund(&Pool::Contributor, &f.sponsor, &0i128), Err(contract_err(Error::InvalidAmount)));
-    assert_eq!(f.client.try_fund(&Pool::Contributor, &f.sponsor, &-5i128), Err(contract_err(Error::InvalidAmount)));
+    assert_eq!(
+        f.client.try_fund(&Pool::Contributor, &f.sponsor, &0i128),
+        Err(contract_err(Error::InvalidAmount))
+    );
+    assert_eq!(
+        f.client.try_fund(&Pool::Contributor, &f.sponsor, &-5i128),
+        Err(contract_err(Error::InvalidAmount))
+    );
 }
 
 /// The leaf construction must be stable: the backend builds leaves off-chain
@@ -556,10 +579,18 @@ fn leaf_construction_is_deterministic() {
     assert_eq!(a, b);
 
     // Any input change produces a different leaf.
-    assert_ne!(a, f.client.leaf(&Pool::Contributor, &alice, &id, &1_001i128));
     assert_ne!(
         a,
-        f.client.leaf(&Pool::Contributor, &Address::generate(&f.env), &id, &1_000i128)
+        f.client.leaf(&Pool::Contributor, &alice, &id, &1_001i128)
+    );
+    assert_ne!(
+        a,
+        f.client.leaf(
+            &Pool::Contributor,
+            &Address::generate(&f.env),
+            &id,
+            &1_000i128
+        )
     );
     assert_ne!(
         a,
@@ -619,7 +650,9 @@ fn leaf_matches_the_pinned_cross_implementation_vector() {
         BytesN::from_array(
             &env,
             &[
-                0xa1, 0x2f, 0x90, 0xc9, 0xb7, 0x23, 0x38, 0x97, 0x26, 0xf6, 0x3f, 0x70, 0xb9, 0xdd, 0x6f, 0x81, 0x5b, 0x45, 0xc6, 0x70, 0x7b, 0x22, 0xb5, 0xfc, 0x6d, 0xa2, 0x2d, 0xef, 0x73, 0x80, 0x55, 0xfe,
+                0xa1, 0x2f, 0x90, 0xc9, 0xb7, 0x23, 0x38, 0x97, 0x26, 0xf6, 0x3f, 0x70, 0xb9, 0xdd,
+                0x6f, 0x81, 0x5b, 0x45, 0xc6, 0x70, 0x7b, 0x22, 0xb5, 0xfc, 0x6d, 0xa2, 0x2d, 0xef,
+                0x73, 0x80, 0x55, 0xfe,
             ]
         ),
         "contributor leaf digest changed; update the vector in BOTH repositories deliberately"
@@ -634,7 +667,9 @@ fn leaf_matches_the_pinned_cross_implementation_vector() {
         BytesN::from_array(
             &env,
             &[
-                0x17, 0x29, 0xf8, 0xad, 0x8f, 0x47, 0xe8, 0xfc, 0xf0, 0x15, 0xb0, 0x77, 0x09, 0x31, 0x11, 0xf5, 0xe1, 0x4f, 0x20, 0xa6, 0x64, 0x37, 0x3b, 0xaf, 0x6d, 0x49, 0x04, 0x1f, 0x59, 0x67, 0xbc, 0xea,
+                0x17, 0x29, 0xf8, 0xad, 0x8f, 0x47, 0xe8, 0xfc, 0xf0, 0x15, 0xb0, 0x77, 0x09, 0x31,
+                0x11, 0xf5, 0xe1, 0x4f, 0x20, 0xa6, 0x64, 0x37, 0x3b, 0xaf, 0x6d, 0x49, 0x04, 0x1f,
+                0x59, 0x67, 0xbc, 0xea,
             ]
         ),
         "maintainer leaf digest changed; update the vector in BOTH repositories deliberately"
@@ -695,9 +730,16 @@ fn root_from_digests(env: &Env, digests: &[BytesN<32>]) -> BytesN<32> {
 /// level promotes its final node, that node contributes no sibling at that
 /// level; the verifier consequently consumes no proof element for it. This is
 /// the subtle case a hand-built helper tends to get wrong.
-fn proof_for_leaf(env: &Env, digests: &[BytesN<32>], target: &BytesN<32>) -> std::vec::Vec<BytesN<32>> {
+fn proof_for_leaf(
+    env: &Env,
+    digests: &[BytesN<32>],
+    target: &BytesN<32>,
+) -> std::vec::Vec<BytesN<32>> {
     assert!(!digests.is_empty(), "a Merkle tree needs at least one leaf");
-    assert!(digests.iter().any(|digest| digest == target), "target is not a leaf");
+    assert!(
+        digests.iter().any(|digest| digest == target),
+        "target is not a leaf"
+    );
 
     let mut level = digests.to_vec();
     level.sort_by_key(|digest| digest.to_array());
@@ -784,13 +826,34 @@ fn tree_roots_match_the_pinned_cross_implementation_vectors() {
     let env = Env::default();
 
     let cases: [(u16, [u8; 32]); 7] = [
-        (1, hex32("7fa54a42524916a1648ec76ce75d295024840b7a3a4f4bbaf3e43155d0014767")),
-        (2, hex32("f5c9186b3b65e6ce5e21dbc239099cca42e0a33498441279117df13a37dcbac2")),
-        (3, hex32("ee89867ea8655639197d33339b404961ea36d5bbb6a0dba2f1149a8c7dc1eddc")),
-        (5, hex32("70f49ea377797a1ce9e8e065d5e77024393a2109a8b6c8caf51c4a1b975242b3")),
-        (6, hex32("d882a0abe524b3f68d10aa4da5e199b9284258b523abae598568fdfff89bdc43")),
-        (7, hex32("73f9296cbe6d89bc6edb6ae7a8ec0cf4633c80bbe390da0fb0ea4291ac7427c5")),
-        (38, hex32("7b4e1ecf8567f90c1fad1bdfac40a72fdb1444205b258994b65aa80078bcd093")),
+        (
+            1,
+            hex32("7fa54a42524916a1648ec76ce75d295024840b7a3a4f4bbaf3e43155d0014767"),
+        ),
+        (
+            2,
+            hex32("f5c9186b3b65e6ce5e21dbc239099cca42e0a33498441279117df13a37dcbac2"),
+        ),
+        (
+            3,
+            hex32("ee89867ea8655639197d33339b404961ea36d5bbb6a0dba2f1149a8c7dc1eddc"),
+        ),
+        (
+            5,
+            hex32("70f49ea377797a1ce9e8e065d5e77024393a2109a8b6c8caf51c4a1b975242b3"),
+        ),
+        (
+            6,
+            hex32("d882a0abe524b3f68d10aa4da5e199b9284258b523abae598568fdfff89bdc43"),
+        ),
+        (
+            7,
+            hex32("73f9296cbe6d89bc6edb6ae7a8ec0cf4633c80bbe390da0fb0ea4291ac7427c5"),
+        ),
+        (
+            38,
+            hex32("7b4e1ecf8567f90c1fad1bdfac40a72fdb1444205b258994b65aa80078bcd093"),
+        ),
     ];
 
     for (n, want) in cases {
@@ -855,11 +918,14 @@ fn a_claim_verifies_through_a_promoted_node_in_an_odd_tree() {
 
     // s0's path is [s1, promoted s2]: the second step folds in a node that was
     // never hashed, which is exactly what promotion means.
-    let (claimant, identity, amount) = owner_of(&sorted[0], &[
-        (&la, &a, &id_a, 100i128),
-        (&lb, &b, &id_b, 200i128),
-        (&lc, &c, &id_c, 300i128),
-    ]);
+    let (claimant, identity, amount) = owner_of(
+        &sorted[0],
+        &[
+            (&la, &a, &id_a, 100i128),
+            (&lb, &b, &id_b, 200i128),
+            (&lc, &c, &id_c, 300i128),
+        ],
+    );
 
     f.client.claim(
         &Pool::Contributor,
@@ -1034,10 +1100,11 @@ fn removing_a_required_sibling_breaks_non_promoted_paths() {
 #[test]
 fn generated_proofs_cover_unsorted_random_like_inputs() {
     let env = Env::default();
-    let inputs: std::vec::Vec<BytesN<32>> = [31u16, 4, 19, 0, 27, 8, 14, 23, 2, 35, 11, 6, 29, 16, 21]
-        .iter()
-        .map(|index| synth_leaf(&env, *index))
-        .collect();
+    let inputs: std::vec::Vec<BytesN<32>> =
+        [31u16, 4, 19, 0, 27, 8, 14, 23, 2, 35, 11, 6, 29, 16, 21]
+            .iter()
+            .map(|index| synth_leaf(&env, *index))
+            .collect();
     let root = root_from_digests(&env, &inputs);
     for target in &inputs {
         let proof = proof_for_leaf(&env, &inputs, target);
@@ -1065,15 +1132,19 @@ fn a_large_generated_proof_claims_successfully() {
     for index in 0u8..24 {
         let claimant = Address::generate(&f.env);
         let identity = BytesN::from_array(&f.env, &[index; 32]);
-        let leaf = f.client.leaf(&Pool::Contributor, &claimant, &identity, &amount);
+        let leaf = f
+            .client
+            .leaf(&Pool::Contributor, &claimant, &identity, &amount);
         claimants.push(claimant);
         identities.push(identity);
         leaves.push(leaf);
     }
 
-    f.client.fund(&Pool::Contributor, &f.sponsor, &(amount * 24));
+    f.client
+        .fund(&Pool::Contributor, &f.sponsor, &(amount * 24));
     let root = root_from_digests(&f.env, &leaves);
-    f.client.publish_root(&Pool::Contributor, &root, &(amount * 24));
+    f.client
+        .publish_root(&Pool::Contributor, &root, &(amount * 24));
 
     let target_index = 17usize;
     let proof = proof_for_leaf(&f.env, &leaves, &leaves[target_index]);
@@ -1086,7 +1157,10 @@ fn a_large_generated_proof_claims_successfully() {
     );
 
     assert!(f.client.is_claimed(&leaves[target_index]));
-    assert_eq!(token::Client::new(&f.env, &f.token).balance(&claimants[target_index]), amount);
+    assert_eq!(
+        token::Client::new(&f.env, &f.token).balance(&claimants[target_index]),
+        amount
+    );
     assert_eq!(f.client.balance(&Pool::Contributor), amount * 23);
 }
 
