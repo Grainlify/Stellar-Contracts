@@ -7,8 +7,8 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    token, vec, Address, Bytes, BytesN, Env,
+    testutils::{Address as _, Events, Ledger as _},
+    token, vec, Address, Bytes, BytesN, Env, IntoVal,
 };
 
 
@@ -411,6 +411,53 @@ fn initialise_is_once_only() {
     let other = Address::generate(&f.env);
     let res = f.client.try_initialise(&other, &f.token, &other, &0u64);
     assert_eq!(res, Err(contract_err(Error::AlreadyInitialised)));
+}
+
+#[test]
+fn initialise_emits_the_established_config() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let sweep_dest = Address::generate(&env);
+    let sweep_delay = 86_400u64;
+
+    let contract = env.register_contract(None, GrainhackEscrow);
+    let client = GrainhackEscrowClient::new(&env, &contract);
+    client.initialise(&admin, &token, &sweep_dest, &sweep_delay);
+
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                contract,
+                (symbol_short!("init"),).into_val(&env),
+                (admin, token, sweep_dest, sweep_delay).into_val(&env),
+            )
+        ]
+    );
+}
+
+#[test]
+fn a_failed_initialise_emits_no_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let sweep_dest = Address::generate(&env);
+
+    let contract = env.register_contract(None, GrainhackEscrow);
+    let client = GrainhackEscrowClient::new(&env, &contract);
+    client.initialise(&admin, &token, &sweep_dest, &0u64);
+
+    let after_ok = env.events().all();
+    let other = Address::generate(&env);
+    let res = client.try_initialise(&other, &token, &other, &0u64);
+    assert_eq!(res, Err(contract_err(Error::AlreadyInitialised)));
+    assert_eq!(env.events().all(), after_ok);
 }
 
 #[test]

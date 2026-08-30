@@ -160,11 +160,19 @@ impl GrainhackEscrow {
 
         env.storage().instance().set(
             &Key::Config,
-            &Config { admin, token, sweep_dest, sweep_delay },
+            &Config {
+                admin: admin.clone(),
+                token: token.clone(),
+                sweep_dest: sweep_dest.clone(),
+                sweep_delay,
+            },
         );
         env.storage().instance().set(&Key::State, &State::Open);
         env.storage().instance().set(&Key::Balance(Pool::Contributor), &0i128);
         env.storage().instance().set(&Key::Balance(Pool::Maintainer), &0i128);
+
+        env.events()
+            .publish((symbol_short!("init"),), (admin, token, sweep_dest, sweep_delay));
     }
 
     /// Fund one pool. Called once per pool, or repeatedly to top up.
