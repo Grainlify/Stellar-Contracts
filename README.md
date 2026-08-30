@@ -64,3 +64,7 @@ custody and mainnet deploys are human operations.
 **This contract has not been audited.** §8 of the spec makes an external audit
 non-negotiable before it holds real money, and that is the reason for shipping
 one chain first — one audit, not four.
+
+See [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) for the current trust
+assumptions, enforced invariants, out-of-scope items, and open questions for
+maintainer review.
