@@ -55,6 +55,31 @@ cargo test
 cargo build --target wasm32-unknown-unknown --release
 ```
 
+### Resource and wasm regression checks
+
+The test suite records CPU instructions and memory bytes for every public
+entry point. `claim` is measured at proof depths 1, 4, and 8 so the cost
+growth is visible. The checked-in baseline also records the optimized wasm
+size. Measurements may be up to 10% above baseline to allow for normal test
+host noise while still catching meaningful regressions.
+
+Run the full guard, including the wasm-size check, with:
+
+```sh
+scripts/check-resource-regressions.sh
+```
+
+If a deliberate change requires a new baseline, run
+`scripts/update-resource-baseline.sh`, review the measured JSON diff, and
+commit it separately from unrelated changes. The guard reports the entry
+point, metric, baseline, observed value, tolerance, and regeneration command
+when it fails. The current measurements are well below Soroban's documented
+per-transaction CPU and memory budgets. At baseline, the depth-8 claim uses
+1,971,762 CPU instructions against the current 400,000,000-instruction testnet
+limit and 187,459 memory bytes against the 40 MiB limit (more than 99.5%
+headroom in both dimensions). Network validators can change these limits, so
+re-check them when reviewing a deployment or a large proof-path change.
+
 ## Not done here
 
 Deployment, funding, key handling and mainnet operations are human tasks and

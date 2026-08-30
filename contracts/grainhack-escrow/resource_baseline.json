@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "tolerance_percent": 10,
+  "wasm_size_bytes": 15192,
+  "entry_points": {
+    "balance": {
+      "cpu_instructions": 940110,
+      "memory_bytes": 65027
+    },
+    "cancel": {
+      "cpu_instructions": 986294,
+      "memory_bytes": 72931
+    },
+    "claim_depth_1": {
+      "cpu_instructions": 1739215,
+      "memory_bytes": 174922
+    },
+    "claim_depth_4": {
+      "cpu_instructions": 1838866,
+      "memory_bytes": 180247
+    },
+    "claim_depth_8": {
+      "cpu_instructions": 1971762,
+      "memory_bytes": 187459
+    },
+    "commit": {
+      "cpu_instructions": 971840,
+      "memory_bytes": 71094
+    },
+    "fund": {
+      "cpu_instructions": 1141888,
+      "memory_bytes": 92869
+    },
+    "get_commitment": {
+      "cpu_instructions": 1018253,
+      "memory_bytes": 78068
+    },
+    "get_root": {
+      "cpu_instructions": 1357214,
+      "memory_bytes": 125860
+    },
+    "get_state": {
+      "cpu_instructions": 934601,
+      "memory_bytes": 64717
+    },
+    "initialise": {
+      "cpu_instructions": 84428,
+      "memory_bytes": 8462
+    },
+    "is_claimed": {
+      "cpu_instructions": 923543,
+      "memory_bytes": 64530
+    },
+    "leaf": {
+      "cpu_instructions": 944035,
+      "memory_bytes": 64991
+    },
+    "publish_root": {
+      "cpu_instructions": 1306999,
+      "memory_bytes": 118072
+    },
+    "sweep": {
+      "cpu_instructions": 1527451,
+      "memory_bytes": 147688
+    }
+  }
+}

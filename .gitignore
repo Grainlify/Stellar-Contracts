@@ -7,3 +7,8 @@ target/
 # session ran `git add -A` here and missed only because the directory did not
 # exist yet.
 .worktrees/
+
+# The explicit baseline-writer test is a local maintenance command; its SDK
+# snapshots are not part of the checked-in regression fixture.
+contracts/grainhack-escrow/test_snapshots/test/write_resource_baseline.*.json
+contracts/grainhack-escrow/test_snapshots/test/public_entry_points_stay_within_resource_baseline.*.json

@@ -7,8 +7,19 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
+    testutils::{Address as _, EnvTestConfig, Ledger as _},
     token, vec, Address, Bytes, BytesN, Env,
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    env,
+    eprintln,
+    format,
+    fs,
+    path::Path,
+    println,
+    string::{String, ToString},
 };
 
 
@@ -715,4 +726,288 @@ fn nibble(c: u8) -> u8 {
         b'A'..=b'F' => c - b'A' + 10,
         _ => panic!("not a hex digit"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Resource regression guard
+// ---------------------------------------------------------------------------
+
+/// The tolerance is part of the baseline file so a deliberate baseline
+/// change also records the policy used to judge normal host/test-run noise.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ResourceMeasurement {
+    cpu_instructions: u64,
+    memory_bytes: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ResourceBaseline {
+    schema_version: u32,
+    tolerance_percent: u64,
+    wasm_size_bytes: u64,
+    entry_points: BTreeMap<String, ResourceMeasurement>,
+}
+
+const RESOURCE_BASELINE: &str = include_str!("../resource_baseline.json");
+
+fn resource_setup(sweep_delay: u64) -> Fixture {
+    let mut fixture = setup(sweep_delay);
+    fixture.env.set_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    fixture
+}
+
+fn measure<F>(env: &Env, operation: F) -> ResourceMeasurement
+where
+    F: FnOnce(),
+{
+    env.budget().reset_tracker();
+    operation();
+    let budget = env.budget();
+    ResourceMeasurement {
+        cpu_instructions: budget.cpu_instruction_cost(),
+        memory_bytes: budget.memory_bytes_cost(),
+    }
+}
+
+fn measure_initialise() -> ResourceMeasurement {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+    let sweep_dest = Address::generate(&env);
+    let contract = env.register_contract(None, GrainhackEscrow);
+    let client = GrainhackEscrowClient::new(&env, &contract);
+
+    measure(&env, || client.initialise(&admin, &token, &sweep_dest, &604_800u64))
+}
+
+fn measure_fund() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || client.fund(&Pool::Contributor, &f.sponsor, &100i128))
+}
+
+fn measure_commit() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    let kind = symbol_short!("drawcmt");
+    let subject = Bytes::from_slice(&f.env, b"resource");
+    let value = BytesN::from_array(&f.env, &[1u8; 32]);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || client.commit(&kind, &subject, &value))
+}
+
+fn measure_get_commitment() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    let kind = symbol_short!("drawcmt");
+    let subject = Bytes::from_slice(&f.env, b"resource");
+    let value = BytesN::from_array(&f.env, &[1u8; 32]);
+    f.client.commit(&kind, &subject, &value);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || {
+        let _ = client.get_commitment(&kind, &subject);
+    })
+}
+
+fn measure_publish_root() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    f.client.fund(&Pool::Contributor, &f.sponsor, &100i128);
+    let root = BytesN::from_array(&f.env, &[1u8; 32]);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || client.publish_root(&Pool::Contributor, &root, &100i128))
+}
+
+fn measure_claim(depth: usize) -> ResourceMeasurement {
+    let f = resource_setup(0);
+    let claimant = Address::generate(&f.env);
+    let identity = BytesN::from_array(&f.env, &[0x11u8; 32]);
+    f.client.fund(&Pool::Contributor, &f.sponsor, &100i128);
+    let leaf = f.client.leaf(&Pool::Contributor, &claimant, &identity, &100i128);
+    let mut proof = Vec::new(&f.env);
+    let mut root = leaf.clone();
+    for index in 0..depth {
+        let sibling = BytesN::from_array(&f.env, &[(index as u8).wrapping_add(1); 32]);
+        root = node(&f.env, &root, &sibling);
+        proof.push_back(sibling);
+    }
+    f.client.publish_root(&Pool::Contributor, &root, &100i128);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || client.claim(&Pool::Contributor, &claimant, &identity, &100i128, &proof))
+}
+
+fn measure_is_claimed() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    let leaf = BytesN::from_array(&f.env, &[1u8; 32]);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || {
+        let _ = client.is_claimed(&leaf);
+    })
+}
+
+fn measure_cancel() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || client.cancel())
+}
+
+fn measure_sweep() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    f.client.fund(&Pool::Contributor, &f.sponsor, &100i128);
+    f.client.cancel();
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || {
+        let _ = client.sweep(&Pool::Contributor);
+    })
+}
+
+fn measure_balance() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || {
+        let _ = client.balance(&Pool::Contributor);
+    })
+}
+
+fn measure_get_state() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || {
+        let _ = client.get_state();
+    })
+}
+
+fn measure_get_root() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    f.client.fund(&Pool::Contributor, &f.sponsor, &100i128);
+    let root = BytesN::from_array(&f.env, &[1u8; 32]);
+    f.client.publish_root(&Pool::Contributor, &root, &100i128);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || {
+        let _ = client.get_root(&Pool::Contributor);
+    })
+}
+
+fn measure_leaf() -> ResourceMeasurement {
+    let f = resource_setup(0);
+    let claimant = Address::generate(&f.env);
+    let identity = BytesN::from_array(&f.env, &[0x11u8; 32]);
+    let env = &f.env;
+    let client = &f.client;
+    measure(env, || {
+        let _ = client.leaf(&Pool::Contributor, &claimant, &identity, &100i128);
+    })
+}
+
+fn resource_measurements() -> BTreeMap<String, ResourceMeasurement> {
+    [
+        ("initialise", measure_initialise()),
+        ("fund", measure_fund()),
+        ("commit", measure_commit()),
+        ("get_commitment", measure_get_commitment()),
+        ("publish_root", measure_publish_root()),
+        ("claim_depth_1", measure_claim(1)),
+        ("claim_depth_4", measure_claim(4)),
+        ("claim_depth_8", measure_claim(8)),
+        ("is_claimed", measure_is_claimed()),
+        ("cancel", measure_cancel()),
+        ("sweep", measure_sweep()),
+        ("balance", measure_balance()),
+        ("get_state", measure_get_state()),
+        ("get_root", measure_get_root()),
+        ("leaf", measure_leaf()),
+    ]
+    .into_iter()
+    .map(|(name, measurement)| (name.to_string(), measurement))
+    .collect()
+}
+
+fn assert_within_baseline(name: &str, actual: u64, baseline: u64, tolerance: u64, metric: &str) {
+    let allowance = baseline.saturating_mul(100 + tolerance) / 100;
+    assert!(
+        actual <= allowance,
+        "{name} {metric} regression: baseline={baseline}, actual={actual}, tolerance={tolerance}%; regenerate resource_baseline.json deliberately with scripts/update-resource-baseline.sh"
+    );
+}
+
+#[test]
+fn public_entry_points_stay_within_resource_baseline() {
+    let baseline: ResourceBaseline = serde_json::from_str(RESOURCE_BASELINE)
+        .expect("resource_baseline.json must be valid JSON");
+    assert_eq!(baseline.schema_version, 1, "unsupported resource baseline schema");
+    let actual = resource_measurements();
+
+    for (name, measurement) in actual {
+        let expected = baseline
+            .entry_points
+            .get(&name)
+            .unwrap_or_else(|| panic!("missing resource baseline for {name}"));
+        assert_within_baseline(
+            &name,
+            measurement.cpu_instructions,
+            expected.cpu_instructions,
+            baseline.tolerance_percent,
+            "CPU instructions",
+        );
+        assert_within_baseline(
+            &name,
+            measurement.memory_bytes,
+            expected.memory_bytes,
+            baseline.tolerance_percent,
+            "memory bytes",
+        );
+    }
+
+    if let Ok(wasm_path) = env::var("WASM_PATH") {
+        let wasm_size = fs::metadata(&wasm_path)
+            .unwrap_or_else(|error| panic!("cannot read wasm at {wasm_path}: {error}"))
+            .len();
+        assert_within_baseline(
+            "compiled wasm",
+            wasm_size,
+            baseline.wasm_size_bytes,
+            baseline.tolerance_percent,
+            "size bytes",
+        );
+    } else {
+        eprintln!("resource guard: wasm size check skipped; use scripts/check-resource-regressions.sh");
+    }
+}
+
+/// Explicitly regenerate the baseline after reviewing measured changes. The
+/// normal test never updates a checked-in expectation automatically.
+#[test]
+#[ignore]
+fn write_resource_baseline() {
+    let output = env::var("RESOURCE_BASELINE_OUTPUT")
+        .expect("RESOURCE_BASELINE_OUTPUT is required when regenerating the baseline");
+    let wasm_path = env::var("WASM_PATH")
+        .expect("WASM_PATH is required when regenerating the baseline");
+    let baseline = ResourceBaseline {
+        schema_version: 1,
+        tolerance_percent: 10,
+        wasm_size_bytes: fs::metadata(&wasm_path)
+            .expect("WASM_PATH must point to a readable wasm file")
+            .len(),
+        entry_points: resource_measurements(),
+    };
+    if let Some(parent) = Path::new(&output).parent() {
+        fs::create_dir_all(parent).expect("cannot create baseline directory");
+    }
+    let json = serde_json::to_string_pretty(&baseline).expect("baseline must serialize");
+    fs::write(&output, format!("{json}\n")).expect("cannot write resource baseline");
+    println!("wrote {output}");
 }
