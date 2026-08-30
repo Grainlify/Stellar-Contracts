@@ -87,7 +87,7 @@ SOURCE_VERSION="$(sed -n 's/.*contractmeta!(key = "version", val = "\([^"]*\)").
 [[ "$SOURCE_VERSION" == "$EXPECTED_VERSION" ]] || die \
   "metadata version $SOURCE_VERSION does not match Cargo version $EXPECTED_VERSION"
 
-RAW_OUTPUT="$(stellar contract info meta --wasm "$WASM_PATH" 2>&1)" \
+RAW_OUTPUT="$(stellar contract info meta --wasm="$WASM_PATH" 2>&1)" \
   || die "stellar CLI could not inspect $WASM_PATH: $RAW_OUTPUT"
 
 contains() {
