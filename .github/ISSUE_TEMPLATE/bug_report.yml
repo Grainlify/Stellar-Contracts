@@ -1,0 +1,63 @@
+name: Bug report
+description: The contract did something other than what you expected.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security reports belong in a [private advisory](https://github.com/Grainlify/Stellar-Contracts/security/advisories/new), not here.
+
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What did the contract actually do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should it have done instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: commands
+    attributes:
+      label: Commands
+      description: The exact commands you ran, in order.
+      render: shell
+      placeholder: |
+        cargo test
+        stellar contract invoke ...
+    validations:
+      required: true
+
+  - type: input
+    id: rustc
+    attributes:
+      label: rustc version
+      description: Output of `rustc --version`.
+      placeholder: rustc 1.xx.x (hash date)
+    validations:
+      required: true
+
+  - type: input
+    id: stellar-cli
+    attributes:
+      label: Stellar CLI version
+      description: Output of `stellar --version`, if you used the CLI. Leave blank otherwise.
+
+  - type: dropdown
+    id: reproduces
+    attributes:
+      label: Where it reproduces
+      description: Does this fail in a local `Env::default()` test, or only against a network?
+      options:
+        - Local Env::default() test
+        - Network only
+        - Both
+        - Unsure
+    validations:
+      required: true
