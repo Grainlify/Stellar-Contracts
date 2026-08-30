@@ -55,6 +55,16 @@ cargo test
 cargo build --target wasm32-unknown-unknown --release
 ```
 
+## Contributor task runner
+
+Install [`just`](https://github.com/casey/just), then run `just` at the
+repository root to list the verified commands. The common commands are
+`just build`, `just test`, `just wasm-release`, `just stellar-build`,
+`just format`, `just fmt-check`, `just lint`, and `just check`. `just ci` is an
+alias for the complete local verification set. The runner only wraps the real
+Cargo and Stellar CLI commands; see [the task-runner guide](docs/TASK-RUNNER.md)
+for prerequisites and troubleshooting.
+
 ## Not done here
 
 Deployment, funding, key handling and mainnet operations are human tasks and
