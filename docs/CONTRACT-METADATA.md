@@ -22,7 +22,6 @@ extra byte is carried by every release. The current entries are:
 | `name` | `GrainHack escrow` | Keep stable for explorers and inventories. |
 | `version` | Cargo package version | Change only with a package release. |
 | `description` | Holds GrainHack prize pools, publishes commitments, and honours pull-based Merkle claims. | Must remain faithful to the README. |
-| `license` | `MIT` | Matches the repository license policy. |
 | `repository` | `https://github.com/Grainlify/Stellar-Contracts` | Use the canonical upstream URL. |
 | `contract` | `grainhack-escrow` | Matches the Cargo package name. |
 

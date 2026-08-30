@@ -32,7 +32,6 @@ contractmeta!(
     key = "description",
     val = "Holds GrainHack prize pools, publishes commitments, and honours pull-based Merkle claims."
 );
-contractmeta!(key = "license", val = "MIT");
 contractmeta!(key = "repository", val = "https://github.com/Grainlify/Stellar-Contracts");
 contractmeta!(key = "contract", val = "grainhack-escrow");
 

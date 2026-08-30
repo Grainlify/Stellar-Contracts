@@ -78,7 +78,6 @@ EXPECTED_VERSION="$(cargo metadata --no-deps --format-version 1 \
   | sed -n 's/.*"name":"grainhack-escrow".*"version":"\([^"]*\)".*/\1/p' \
   | head -1)"
 EXPECTED_DESCRIPTION="Holds GrainHack prize pools, publishes commitments, and honours pull-based Merkle claims."
-EXPECTED_LICENSE="MIT"
 EXPECTED_REPOSITORY="https://github.com/Grainlify/Stellar-Contracts"
 EXPECTED_CONTRACT="grainhack-escrow"
 [[ -n "$EXPECTED_VERSION" ]] || die "could not read package version"
@@ -98,7 +97,6 @@ missing=()
 contains "$EXPECTED_NAME" || missing+=("name=$EXPECTED_NAME")
 contains "$EXPECTED_VERSION" || missing+=("version=$EXPECTED_VERSION")
 contains "$EXPECTED_DESCRIPTION" || missing+=("description=$EXPECTED_DESCRIPTION")
-contains "$EXPECTED_LICENSE" || missing+=("license=$EXPECTED_LICENSE")
 contains "$EXPECTED_REPOSITORY" || missing+=("repository=$EXPECTED_REPOSITORY")
 contains "$EXPECTED_CONTRACT" || missing+=("contract=$EXPECTED_CONTRACT")
 
@@ -135,7 +133,6 @@ else
   printf '  name:        %s\n' "$EXPECTED_NAME"
   printf '  version:     %s\n' "$EXPECTED_VERSION"
   printf '  description: %s\n' "$EXPECTED_DESCRIPTION"
-  printf '  license:     %s\n' "$EXPECTED_LICENSE"
   printf '  repository:  %s\n' "$EXPECTED_REPOSITORY"
   printf '  contract:    %s\n' "$EXPECTED_CONTRACT"
 fi

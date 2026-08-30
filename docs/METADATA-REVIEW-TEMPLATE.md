@@ -43,7 +43,6 @@ CLI output uses a table, retain the table in the review record.
 | `name` | GrainHack escrow |  | [ ] |
 | `version` | Cargo package version |  | [ ] |
 | `description` | Holds GrainHack prize pools, publishes commitments, and honours pull-based Merkle claims. |  | [ ] |
-| `license` | MIT |  | [ ] |
 | `repository` | https://github.com/Grainlify/Stellar-Contracts |  | [ ] |
 | `contract` | grainhack-escrow |  | [ ] |
 

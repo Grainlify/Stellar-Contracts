@@ -57,7 +57,7 @@ cargo build --target wasm32-unknown-unknown --release
 
 ## Artifact metadata
 
-The release wasm embeds its name, Cargo version, contract description, license,
+The release wasm embeds its name, Cargo version, contract description,
 canonical repository, and package name using Soroban's `contractmeta!` macro.
 Inspect the compiled artifact—not only the source—with:
 
