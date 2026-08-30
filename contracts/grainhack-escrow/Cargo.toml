@@ -3,6 +3,11 @@ name = "grainhack-escrow"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "Soroban escrow contract for GrainHack prize pools, commitments, and Merkle claims."
+repository = "https://github.com/Grainlify/Stellar-Contracts"
+readme = "../../README.md"
+keywords = ["soroban", "stellar", "escrow", "merkle"]
+categories = ["cryptography", "finance"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
