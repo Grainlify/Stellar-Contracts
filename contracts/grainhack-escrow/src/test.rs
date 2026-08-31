@@ -161,6 +161,10 @@ fn uninitialised_contract_rejects_config_and_state_reads() {
         client.try_get_state(),
         Err(contract_err(Error::NotInitialised))
     );
+    assert_eq!(
+        client.try_balance(&Pool::Contributor),
+        Err(contract_err(Error::NotInitialised))
+    );
 }
 
 // ---------------------------------------------------------------------------

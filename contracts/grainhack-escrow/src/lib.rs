@@ -461,12 +461,14 @@ impl GrainhackEscrow {
 
     /// Returns the escrowed balance for `pool`.
     ///
-    /// Reads `Key::Balance(pool)` from instance storage. Unlike the other
-    /// accessors, this does **not** panic if the contract is uninitialised —
-    /// it delegates to `balance_of`, which uses `unwrap_or(0)` and returns `0`
-    /// rather than `Error::NotInitialised`. A return value of `0` therefore
-    /// does not distinguish "empty pool" from "not set up".
+    /// Reads `Key::Balance(pool)` from instance storage. Panics with
+    /// `Error::NotInitialised` if the contract has not been initialised,
+    /// so a return value of `0` always means the pool is empty rather than
+    /// "not set up".
     pub fn balance(env: Env, pool: Pool) -> i128 {
+        // Ensure the contract is initialised before reading a balance.
+        // This prevents `0` being returned for an uninitialised contract.
+        let _ = Self::state(&env);
         Self::balance_of(&env, pool)
     }
 
