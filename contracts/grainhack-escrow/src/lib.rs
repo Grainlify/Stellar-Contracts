@@ -66,10 +66,15 @@ const NODE_PREFIX: u8 = 0x01;
 pub enum Error {
     AlreadyInitialised = 1,
     NotInitialised = 2,
+    /// Authorization is enforced by the framework via `require_auth()` calls on
+    /// relevant addresses. The contract never gets a chance to return this
+    /// error because auth failures halt invocation before contract logic runs.
     NotAuthorised = 3,
     /// A maintainer operation tried to draw on contributor funds, or vice
     /// versa. Structurally impossible by design; this exists so the attempt
-    /// is a loud failure rather than an accounting drift.
+    /// is a loud failure rather than an accounting drift. Never actually raised
+    /// because the pool is an explicit argument and balances are stored under
+    /// separate keys, so there is no code path that could mix the two pools.
     PoolMismatch = 4,
     InsufficientEscrow = 5,
     /// The event is not in a state where this operation is legitimate.
@@ -82,6 +87,11 @@ pub enum Error {
     /// write-once: a second one would make "which seed was committed?"
     /// unanswerable, which is the entire guarantee.
     CommitmentExists = 11,
+    /// Commitments are read-only on-chain after being written. The contract
+    /// exposes `get_commitment`, which returns `None` when a commitment is
+    /// absent, so callers distinguish "never committed" from "committed to
+    /// zero" without this contract ever needing to fail on a missing entry.
+    /// Consequently the variant is never raised.
     CommitmentMissing = 12,
     /// Timelock has not elapsed.
     TimelockActive = 13,
