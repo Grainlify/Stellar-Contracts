@@ -66,10 +66,17 @@ const NODE_PREFIX: u8 = 0x01;
 pub enum Error {
     AlreadyInitialised = 1,
     NotInitialised = 2,
+    /// Declared but never raised. Authorisation is enforced by the Soroban
+    /// framework via `require_auth()` on every state-changing function; an
+    /// unauthorised caller is halted at the invocation level before the
+    /// contract ever has the chance to return this error. This variant is
+    /// kept as an explicit record that the case was considered.
     NotAuthorised = 3,
     /// A maintainer operation tried to draw on contributor funds, or vice
     /// versa. Structurally impossible by design; this exists so the attempt
-    /// is a loud failure rather than an accounting drift.
+    /// is a loud failure rather than an accounting drift. This variant is
+    /// declared but never raised because the structural split makes the
+    /// case unreachable in practice.
     PoolMismatch = 4,
     InsufficientEscrow = 5,
     /// The event is not in a state where this operation is legitimate.
@@ -82,6 +89,12 @@ pub enum Error {
     /// write-once: a second one would make "which seed was committed?"
     /// unanswerable, which is the entire guarantee.
     CommitmentExists = 11,
+    /// Declared but never raised. This variant was reserved for the case
+    /// where a draw-seed commit must exist before an operation (e.g. a
+    /// reveal or claim) but is absent. In the current implementation the
+    /// commitment is created atomically with its first use, so the missing
+    /// case never arises. The variant is kept as an explicit record that
+    /// the case was considered.
     CommitmentMissing = 12,
     /// Timelock has not elapsed.
     TimelockActive = 13,
