@@ -66,10 +66,17 @@ const NODE_PREFIX: u8 = 0x01;
 pub enum Error {
     AlreadyInitialised = 1,
     NotInitialised = 2,
+    /// Declared for interface completeness but never raised directly by the
+    /// contract. Authorization checks are enforced at the host/framework level
+    /// via `Address::require_auth()`, which aborts invocation rather than
+    /// returning a contract error.
     NotAuthorised = 3,
     /// A maintainer operation tried to draw on contributor funds, or vice
     /// versa. Structurally impossible by design; this exists so the attempt
     /// is a loud failure rather than an accounting drift.
+    ///
+    /// Note: Declared but never raised in practice because the two pools are
+    /// separated into disjoint storage keys (`Key::Balance(Pool)`).
     PoolMismatch = 4,
     InsufficientEscrow = 5,
     /// The event is not in a state where this operation is legitimate.
@@ -82,6 +89,9 @@ pub enum Error {
     /// write-once: a second one would make "which seed was committed?"
     /// unanswerable, which is the entire guarantee.
     CommitmentExists = 11,
+    /// A required commitment was not found in storage. Declared but never
+    /// raised directly; intended for scenarios requiring verification of a
+    /// prior draw-seed commitment before an operation proceeds.
     CommitmentMissing = 12,
     /// Timelock has not elapsed.
     TimelockActive = 13,
