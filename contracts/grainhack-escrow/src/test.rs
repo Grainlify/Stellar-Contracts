@@ -6,6 +6,7 @@
 extern crate std;
 
 use super::*;
+use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
 use soroban_sdk::{
     testutils::{Address as _, EnvTestConfig, Events, Ledger as _},
@@ -1206,6 +1207,434 @@ fn nibble(c: u8) -> u8 {
         b'a'..=b'f' => c - b'a' + 10,
         b'A'..=b'F' => c - b'A' + 10,
         _ => panic!("not a hex digit"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property-based Merkle proof verification tests
+// ---------------------------------------------------------------------------
+
+/// Strategy producing tree leaf counts that explicitly weight:
+/// - `1` and `2`
+/// - powers of two (`4, 8, 16, 32`)
+/// - counts immediately below and above powers of two (`3, 5, 7, 9, 15, 17, 31, 33`)
+/// - odd counts (`3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35`)
+/// - arbitrary counts in `1..=36`
+fn tree_leaf_count_strategy(min_leaves: usize) -> impl Strategy<Value = usize> {
+    let special_counts: std::vec::Vec<usize> = [
+        1usize, 2, 3, 4, 5, 6, 7, 8, 9, 11, 13, 15, 16, 17, 19, 21, 23, 25, 31, 32, 33,
+    ]
+    .into_iter()
+    .filter(|&c| c >= min_leaves)
+    .collect();
+
+    prop_oneof![
+        3 => proptest::sample::select(special_counts),
+        2 => min_leaves..=36usize,
+    ]
+}
+
+/// Strategy generating a vector of distinct 32-byte leaf digests in arbitrary
+/// (unsorted) order across the targeted tree sizes.
+fn distinct_leaf_bytes_strategy(
+    min_leaves: usize,
+) -> impl Strategy<Value = std::vec::Vec<[u8; 32]>> {
+    tree_leaf_count_strategy(min_leaves).prop_flat_map(|count| {
+        proptest::collection::vec(any::<[u8; 32]>(), count).prop_map(|mut raw| {
+            // Guarantee uniqueness without sorting by tagging bytes 0..2 if needed
+            // while preserving arbitrary relative digest order.
+            let mut seen = std::collections::BTreeSet::new();
+            for (idx, item) in raw.iter_mut().enumerate() {
+                while !seen.insert(*item) {
+                    item[0] = item[0].wrapping_add(1);
+                    item[1] ^= (idx as u8).wrapping_add(1);
+                }
+            }
+            raw
+        })
+    })
+}
+
+/// Collect every internal node built across all levels of the canonical Merkle
+/// tree, along with the remaining proof subpath from that internal node to the
+/// root and its two immediate children `(left, right)`.
+fn internal_nodes_with_subpaths(
+    env: &Env,
+    digests: &[BytesN<32>],
+) -> std::vec::Vec<(
+    BytesN<32>,
+    BytesN<32>,
+    BytesN<32>,
+    std::vec::Vec<BytesN<32>>,
+)> {
+    let mut level = digests.to_vec();
+    level.sort_by_key(|d| d.to_array());
+
+    // First collect all `(internal_digest, left, right, level_nodes)` snapshots.
+    let mut levels: std::vec::Vec<std::vec::Vec<BytesN<32>>> = std::vec::Vec::new();
+    let mut created_at_level: std::vec::Vec<(usize, BytesN<32>, BytesN<32>, BytesN<32>)> =
+        std::vec::Vec::new();
+
+    while level.len() > 1 {
+        let mut next = std::vec::Vec::new();
+        let mut i = 0usize;
+        while i < level.len() {
+            if i + 1 == level.len() {
+                next.push(level[i].clone());
+            } else {
+                let parent = node(env, &level[i], &level[i + 1]);
+                created_at_level.push((
+                    levels.len(),
+                    parent.clone(),
+                    level[i].clone(),
+                    level[i + 1].clone(),
+                ));
+                next.push(parent);
+            }
+            i += 2;
+        }
+        levels.push(next.clone());
+        level = next;
+    }
+
+    // For each internal node created at `start_level`, trace its remaining sibling path to root.
+    let mut out = std::vec::Vec::new();
+    for (start_level, internal, left, right) in created_at_level {
+        let mut current = internal.clone();
+        let mut subpath = std::vec::Vec::new();
+        let mut cur_level = levels[start_level].clone();
+
+        while cur_level.len() > 1 {
+            let index = cur_level
+                .iter()
+                .position(|d| d == &current)
+                .expect("internal node must appear in its level");
+            let promoted = cur_level.len() % 2 == 1 && index + 1 == cur_level.len();
+            if !promoted {
+                let sib_idx = if index % 2 == 0 { index + 1 } else { index - 1 };
+                subpath.push(cur_level[sib_idx].clone());
+            }
+
+            let mut next = std::vec::Vec::new();
+            let mut i = 0usize;
+            while i < cur_level.len() {
+                if i + 1 == cur_level.len() {
+                    next.push(cur_level[i].clone());
+                } else {
+                    next.push(node(env, &cur_level[i], &cur_level[i + 1]));
+                }
+                i += 2;
+            }
+            current = if promoted {
+                cur_level[index].clone()
+            } else {
+                next[index / 2].clone()
+            };
+            cur_level = next;
+        }
+
+        out.push((internal, left, right, subpath));
+    }
+
+    out
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Property 1 — Soundness:
+    /// For any randomly generated set of distinct leaves (including `n = 1`, `n = 2`,
+    /// odd leaf counts, powers of two, and counts immediately below/above powers of two)
+    /// and any leaf in the set, the proof generated by `proof_for_leaf` verifies against
+    /// `root_from_digests` via `GrainhackEscrow::verify_proof` and is invariant to input
+    /// leaf permutation.
+    #[test]
+    fn prop_merkle_soundness_across_tree_shapes(
+        leaf_arrays in distinct_leaf_bytes_strategy(1),
+        target_selector in any::<usize>(),
+    ) {
+        let env = Env::new_with_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let leaves: std::vec::Vec<BytesN<32>> = leaf_arrays
+            .iter()
+            .map(|arr| BytesN::from_array(&env, arr))
+            .collect();
+        let root = root_from_digests(&env, &leaves);
+
+        // Permuting the input order must produce the exact same root and proofs.
+        let mut reversed = leaves.clone();
+        reversed.reverse();
+        prop_assert_eq!(&root, &root_from_digests(&env, &reversed));
+
+        for leaf in &leaves {
+            let proof = proof_for_leaf(&env, &leaves, leaf);
+            prop_assert_eq!(&proof, &proof_for_leaf(&env, &reversed, leaf));
+            prop_assert!(GrainhackEscrow::verify_proof(
+                &env,
+                &root,
+                leaf,
+                &sdk_proof(&env, &proof),
+            ));
+        }
+
+        // Also verify real `leaf_hash` entitlements built from the generated identities.
+        let chosen_idx = target_selector % leaf_arrays.len();
+        let real_leaves: std::vec::Vec<BytesN<32>> = leaf_arrays
+            .iter()
+            .enumerate()
+            .map(|(idx, arr)| {
+                let claimant = Address::generate(&env);
+                let identity = BytesN::from_array(&env, arr);
+                let amount = ((idx as i128) + 1) * 100;
+                let pool = if idx % 2 == 0 {
+                    Pool::Contributor
+                } else {
+                    Pool::Maintainer
+                };
+                GrainhackEscrow::leaf_hash(&env, &pool, &claimant, &identity, amount)
+            })
+            .collect();
+        let real_root = root_from_digests(&env, &real_leaves);
+        let real_proof = proof_for_leaf(&env, &real_leaves, &real_leaves[chosen_idx]);
+        prop_assert!(GrainhackEscrow::verify_proof(
+            &env,
+            &real_root,
+            &real_leaves[chosen_idx],
+            &sdk_proof(&env, &real_proof),
+        ));
+    }
+
+    /// Property 2 — Exclusion:
+    /// A leaf digest not in the tree (or a perturbed entitlement whose pool,
+    /// claimant, identity hash, or amount differs) never verifies against any
+    /// proof generated for a member of the tree.
+    #[test]
+    fn prop_merkle_exclusion_for_non_member_leaves(
+        leaf_arrays in distinct_leaf_bytes_strategy(1),
+        outsider_raw in any::<[u8; 32]>(),
+        proof_idx in any::<usize>(),
+    ) {
+        let env = Env::new_with_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let mut outsider = outsider_raw;
+        while leaf_arrays.contains(&outsider) {
+            outsider[0] = outsider[0].wrapping_add(1);
+        }
+
+        let leaves: std::vec::Vec<BytesN<32>> = leaf_arrays
+            .iter()
+            .map(|arr| BytesN::from_array(&env, arr))
+            .collect();
+        let root = root_from_digests(&env, &leaves);
+        let outsider_leaf = BytesN::from_array(&env, &outsider);
+
+        let member = &leaves[proof_idx % leaves.len()];
+        let proof = proof_for_leaf(&env, &leaves, member);
+        prop_assert!(!GrainhackEscrow::verify_proof(
+            &env,
+            &root,
+            &outsider_leaf,
+            &sdk_proof(&env, &proof),
+        ));
+    }
+
+    /// Property 3 — No internal-node claims (domain separation `0x00` vs `0x01`):
+    /// In any tree with `n >= 2` leaves, no leaf constructed via `GrainhackEscrow::leaf_hash`
+    /// (or hashed with `LEAF_PREFIX` / without `NODE_PREFIX` over a sorted child pair)
+    /// can collide with an internal node digest or verify using that internal node's
+    /// remaining path (`subpath`) to the root, nor can any member leaf verify using
+    /// an internal node's shortened subpath.
+    #[test]
+    fn prop_merkle_no_internal_node_claims(
+        leaf_arrays in distinct_leaf_bytes_strategy(2),
+        amount in 1i128..1_000_000_000i128,
+    ) {
+        let env = Env::new_with_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let leaves: std::vec::Vec<BytesN<32>> = leaf_arrays
+            .iter()
+            .map(|arr| BytesN::from_array(&env, arr))
+            .collect();
+        let root = root_from_digests(&env, &leaves);
+        let internals = internal_nodes_with_subpaths(&env, &leaves);
+        prop_assert!(!internals.is_empty());
+
+        let claimant = Address::generate(&env);
+        for (internal_digest, left, right, subpath) in &internals {
+            let sdk_sub = sdk_proof(&env, subpath);
+
+            // 1. Neither child leaf/node nor a forged entitlement leaf using the
+            // children's bytes as identity hash can verify against `subpath`.
+            let forged_contributor = GrainhackEscrow::leaf_hash(
+                &env,
+                &Pool::Contributor,
+                &claimant,
+                left,
+                amount,
+            );
+            let forged_maintainer = GrainhackEscrow::leaf_hash(
+                &env,
+                &Pool::Maintainer,
+                &claimant,
+                right,
+                amount,
+            );
+            prop_assert_ne!(&forged_contributor, internal_digest);
+            prop_assert_ne!(&forged_maintainer, internal_digest);
+            prop_assert!(!GrainhackEscrow::verify_proof(&env, &root, &forged_contributor, &sdk_sub));
+            prop_assert!(!GrainhackEscrow::verify_proof(&env, &root, &forged_maintainer, &sdk_sub));
+            prop_assert!(!GrainhackEscrow::verify_proof(&env, &root, left, &sdk_sub));
+            prop_assert!(!GrainhackEscrow::verify_proof(&env, &root, right, &sdk_sub));
+
+            // 2. Domain separation: a leaf-prefixed (`0x00`) or unprefixed pair digest
+            // over `(min(left, right), max(left, right))` must never verify at `subpath`.
+            let l_arr = left.to_array();
+            let r_arr = right.to_array();
+            let (lo, hi) = if l_arr <= r_arr {
+                (&l_arr, &r_arr)
+            } else {
+                (&r_arr, &l_arr)
+            };
+            let leaf_prefixed_pair = sha(&env, &[&[LEAF_PREFIX], lo, hi]);
+            let unprefixed_pair = sha(&env, &[lo, hi]);
+            prop_assert!(!GrainhackEscrow::verify_proof(&env, &root, &leaf_prefixed_pair, &sdk_sub));
+            prop_assert!(!GrainhackEscrow::verify_proof(&env, &root, &unprefixed_pair, &sdk_sub));
+        }
+    }
+
+    /// Property 4 — Tamper resistance:
+    /// Flipping any single bit in the leaf digest, the root digest, or any proof
+    /// sibling — or swapping two distinct proof siblings at different levels —
+    /// causes `GrainhackEscrow::verify_proof` to reject the proof.
+    #[test]
+    fn prop_merkle_tamper_resistance_bit_flips_and_swaps(
+        leaf_arrays in distinct_leaf_bytes_strategy(2),
+        target_selector in any::<usize>(),
+        sibling_selector in any::<usize>(),
+        byte_idx in 0usize..32,
+        bit_idx in 0u8..8,
+    ) {
+        let env = Env::new_with_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let leaves: std::vec::Vec<BytesN<32>> = leaf_arrays
+            .iter()
+            .map(|arr| BytesN::from_array(&env, arr))
+            .collect();
+        let root = root_from_digests(&env, &leaves);
+        let target = &leaves[target_selector % leaves.len()];
+        let proof = proof_for_leaf(&env, &leaves, target);
+        prop_assert!(!proof.is_empty());
+
+        let mask = 1u8 << bit_idx;
+
+        // 1. Bit flip in leaf digest.
+        let mut flipped_leaf_arr = target.to_array();
+        flipped_leaf_arr[byte_idx] ^= mask;
+        let flipped_leaf = BytesN::from_array(&env, &flipped_leaf_arr);
+        prop_assert!(!GrainhackEscrow::verify_proof(
+            &env,
+            &root,
+            &flipped_leaf,
+            &sdk_proof(&env, &proof),
+        ));
+
+        // 2. Bit flip in root digest.
+        let mut flipped_root_arr = root.to_array();
+        flipped_root_arr[byte_idx] ^= mask;
+        let flipped_root = BytesN::from_array(&env, &flipped_root_arr);
+        prop_assert!(!GrainhackEscrow::verify_proof(
+            &env,
+            &flipped_root,
+            target,
+            &sdk_proof(&env, &proof),
+        ));
+
+        // 3. Bit flip in a proof sibling.
+        let sib_pos = sibling_selector % proof.len();
+        let mut mutated_proof = proof.clone();
+        let mut sib_arr = mutated_proof[sib_pos].to_array();
+        sib_arr[byte_idx] ^= mask;
+        mutated_proof[sib_pos] = BytesN::from_array(&env, &sib_arr);
+        prop_assert!(!GrainhackEscrow::verify_proof(
+            &env,
+            &root,
+            target,
+            &sdk_proof(&env, &mutated_proof),
+        ));
+
+        // 4. Swapping two distinct proof siblings across levels.
+        if proof.len() >= 2 {
+            let first = sib_pos;
+            let second = (sib_pos + 1) % proof.len();
+            if proof[first] != proof[second] {
+                let mut swapped = proof.clone();
+                swapped.swap(first, second);
+                prop_assert!(!GrainhackEscrow::verify_proof(
+                    &env,
+                    &root,
+                    target,
+                    &sdk_proof(&env, &swapped),
+                ));
+            }
+        }
+    }
+
+    /// Property 5 — Length sensitivity:
+    /// Appending an extra digest to a valid proof (including `n = 1` empty proof)
+    /// or truncating/removing any required element from a non-empty proof causes
+    /// `GrainhackEscrow::verify_proof` to return `false`.
+    #[test]
+    fn prop_merkle_length_sensitivity_truncation_and_extension(
+        leaf_arrays in distinct_leaf_bytes_strategy(1),
+        target_selector in any::<usize>(),
+        remove_selector in any::<usize>(),
+        extra_bytes in any::<[u8; 32]>(),
+    ) {
+        let env = Env::new_with_config(EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let leaves: std::vec::Vec<BytesN<32>> = leaf_arrays
+            .iter()
+            .map(|arr| BytesN::from_array(&env, arr))
+            .collect();
+        let root = root_from_digests(&env, &leaves);
+        let target = &leaves[target_selector % leaves.len()];
+        let proof = proof_for_leaf(&env, &leaves, target);
+
+        // Extending the proof by one extra sibling must always fail.
+        let mut extended = proof.clone();
+        extended.push(BytesN::from_array(&env, &extra_bytes));
+        prop_assert!(!GrainhackEscrow::verify_proof(
+            &env,
+            &root,
+            target,
+            &sdk_proof(&env, &extended),
+        ));
+
+        // Truncating or dropping any element from a non-empty proof must fail.
+        if !proof.is_empty() {
+            let truncated = &proof[..proof.len() - 1];
+            prop_assert!(!GrainhackEscrow::verify_proof(
+                &env,
+                &root,
+                target,
+                &sdk_proof(&env, truncated),
+            ));
+
+            let drop_idx = remove_selector % proof.len();
+            let mut dropped = proof.clone();
+            dropped.remove(drop_idx);
+            prop_assert!(!GrainhackEscrow::verify_proof(
+                &env,
+                &root,
+                target,
+                &sdk_proof(&env, &dropped),
+            ));
+        }
     }
 }
 
