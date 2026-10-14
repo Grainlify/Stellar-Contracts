@@ -618,10 +618,147 @@ fn _fixture_fields_used(f: &Fixture) {
 }
 
 // ---------------------------------------------------------------------------
-// Cross-implementation leaf pin
+// Cross-implementation leaf and tree fixture
 // ---------------------------------------------------------------------------
 
-/// The leaf digest for a fixed set of inputs, pinned as a golden value.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FixtureEncoding {
+    binary_encoding: String,
+    address_encoding: String,
+    address_length_prefix_byte_order: String,
+    amount_byte_order: String,
+    synthetic_leaf_index_byte_order: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FixtureLeafInputs {
+    identity_hash_hex: String,
+    claim_address: String,
+    amount_minor: i128,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FixtureLeafVector {
+    name: String,
+    pool: String,
+    pool_byte: u8,
+    claim_address: String,
+    identity_hash_hex: String,
+    amount_minor: i128,
+    expected_leaf_hex: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FixtureTreeCase {
+    leaf_count: u16,
+    leaves_hex: std::vec::Vec<String>,
+    expected_root_hex: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FixturePinnedProof {
+    leaf_count: u16,
+    leaf: String,
+    siblings: std::vec::Vec<String>,
+    expected_root: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct FixtureTreeVectors {
+    leaves_sample: BTreeMap<String, String>,
+    roots: BTreeMap<String, String>,
+    #[serde(default)]
+    cases: std::vec::Vec<FixtureTreeCase>,
+    proof: FixturePinnedProof,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CrossImplementationFixture {
+    encoding: FixtureEncoding,
+    inputs: FixtureLeafInputs,
+    leaf_contributor: String,
+    leaf_maintainer: String,
+    #[serde(default)]
+    leaf_vectors: std::vec::Vec<FixtureLeafVector>,
+    tree_vectors: FixtureTreeVectors,
+}
+
+fn load_cross_implementation_fixture() -> CrossImplementationFixture {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/leaf_vector.json");
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read fixture at {}: {err}", path.display()));
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|err| panic!("failed to parse fixture at {}: {err}", path.display()))
+}
+
+fn parse_pool(pool: &str, pool_byte: u8) -> Pool {
+    match (pool, pool_byte) {
+        ("contributor", 0) => Pool::Contributor,
+        ("maintainer", 1) => Pool::Maintainer,
+        _ => panic!("unsupported fixture pool ({pool:?}, byte={pool_byte})"),
+    }
+}
+
+fn assert_leaf_vectors(
+    env: &Env,
+    client: &GrainhackEscrowClient<'_>,
+    fixture: &CrossImplementationFixture,
+) {
+    assert_eq!(fixture.encoding.binary_encoding, "lowercase_hex");
+    assert_eq!(
+        fixture.encoding.address_length_prefix_byte_order,
+        "u16_big_endian"
+    );
+    assert_eq!(
+        fixture.encoding.amount_byte_order,
+        "u256_big_endian_32_bytes"
+    );
+    assert_eq!(
+        fixture.encoding.synthetic_leaf_index_byte_order,
+        "u16_big_endian"
+    );
+
+    let claimant = Address::from_string(&soroban_sdk::String::from_str(
+        env,
+        &fixture.inputs.claim_address,
+    ));
+    let identity = BytesN::from_array(env, &hex32(&fixture.inputs.identity_hash_hex));
+    let amount = fixture.inputs.amount_minor;
+
+    let contributor = client.leaf(&Pool::Contributor, &claimant, &identity, &amount);
+    assert_eq!(
+        contributor,
+        BytesN::from_array(env, &hex32(&fixture.leaf_contributor)),
+        "contributor leaf digest changed; update the vector in BOTH repositories deliberately"
+    );
+
+    let maintainer = client.leaf(&Pool::Maintainer, &claimant, &identity, &amount);
+    assert_ne!(contributor, maintainer);
+    assert_eq!(
+        maintainer,
+        BytesN::from_array(env, &hex32(&fixture.leaf_maintainer)),
+        "maintainer leaf digest changed; update the vector in BOTH repositories deliberately"
+    );
+
+    assert!(
+        !fixture.leaf_vectors.is_empty(),
+        "fixture must include at least one entry in leaf_vectors"
+    );
+    for entry in &fixture.leaf_vectors {
+        let pool = parse_pool(&entry.pool, entry.pool_byte);
+        let addr = Address::from_string(&soroban_sdk::String::from_str(env, &entry.claim_address));
+        let id = BytesN::from_array(env, &hex32(&entry.identity_hash_hex));
+        let got = client.leaf(&pool, &addr, &id, &entry.amount_minor);
+        let want = BytesN::from_array(env, &hex32(&entry.expected_leaf_hex));
+        assert_eq!(
+            got, want,
+            "leaf vector {:?} ({}) disagreed with expected_leaf_hex",
+            entry.name, entry.pool
+        );
+    }
+}
+
+/// The leaf digest for a fixed set of inputs, pinned in `fixtures/leaf_vector.json`.
 ///
 /// `leaf()` is exported so the backend's Merkle builder can be tested against
 /// this contract rather than against a second implementation of the same rules
@@ -630,58 +767,17 @@ fn _fixture_fields_used(f: &Fixture) {
 /// a UTF-8 address, an 8-byte amount, a chain id and an event id, and a root
 /// built by one could not be claimed against the other.
 ///
-/// Both now compute the canonical construction of spec §13.1 and this vector
-/// holds the agreed digests. If it fails, one side moved: fix the side that
-/// moved rather than updating the vector to make it pass.
-///
-/// The identical vector lives at
-/// `Grainlify-Backend/internal/chain/testdata/leaf_vector.json`. The two copies
-/// must stay byte-identical.
+/// Both now compute the canonical construction of spec §13.1 and the committed
+/// fixture file holds the agreed digests. If it fails, one side moved: fix the
+/// side that moved rather than updating the vector to make it pass.
 #[test]
 fn leaf_matches_the_pinned_cross_implementation_vector() {
     let env = Env::default();
     let contract = env.register_contract(None, GrainhackEscrow);
     let client = GrainhackEscrowClient::new(&env, &contract);
+    let fixture = load_cross_implementation_fixture();
 
-    // A fixed, valid Stellar address rather than a generated one, so the
-    // digest is reproducible across runs and machines.
-    let claimant = Address::from_string(&soroban_sdk::String::from_str(
-        &env,
-        "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-    ));
-    let identity = BytesN::from_array(&env, &[0x11u8; 32]);
-    let amount = 1_500_000i128;
-
-    let contributor = client.leaf(&Pool::Contributor, &claimant, &identity, &amount);
-    assert_eq!(
-        contributor,
-        BytesN::from_array(
-            &env,
-            &[
-                0xa1, 0x2f, 0x90, 0xc9, 0xb7, 0x23, 0x38, 0x97, 0x26, 0xf6, 0x3f, 0x70, 0xb9, 0xdd,
-                0x6f, 0x81, 0x5b, 0x45, 0xc6, 0x70, 0x7b, 0x22, 0xb5, 0xfc, 0x6d, 0xa2, 0x2d, 0xef,
-                0x73, 0x80, 0x55, 0xfe,
-            ]
-        ),
-        "contributor leaf digest changed; update the vector in BOTH repositories deliberately"
-    );
-
-    // The pool byte is inside the hash, so the same entitlement in the other
-    // pool is a different leaf. This is the property the Go builder lacks.
-    let maintainer = client.leaf(&Pool::Maintainer, &claimant, &identity, &amount);
-    assert_ne!(contributor, maintainer);
-    assert_eq!(
-        maintainer,
-        BytesN::from_array(
-            &env,
-            &[
-                0x17, 0x29, 0xf8, 0xad, 0x8f, 0x47, 0xe8, 0xfc, 0xf0, 0x15, 0xb0, 0x77, 0x09, 0x31,
-                0x11, 0xf5, 0xe1, 0x4f, 0x20, 0xa6, 0x64, 0x37, 0x3b, 0xaf, 0x6d, 0x49, 0x04, 0x1f,
-                0x59, 0x67, 0xbc, 0xea,
-            ]
-        ),
-        "maintainer leaf digest changed; update the vector in BOTH repositories deliberately"
-    );
+    assert_leaf_vectors(&env, &client, &fixture);
 }
 
 // ---------------------------------------------------------------------------
@@ -802,8 +898,107 @@ fn sdk_proof(env: &Env, proof: &[BytesN<32>]) -> Vec<BytesN<32>> {
     result
 }
 
-/// The tree, pinned across implementations - the leaf already was, the tree was
-/// not.
+fn assert_tree_vectors(env: &Env, fixture: &CrossImplementationFixture) {
+    assert!(
+        !fixture.tree_vectors.leaves_sample.is_empty(),
+        "fixture must include leaves_sample"
+    );
+    for (idx_str, want_hex) in &fixture.tree_vectors.leaves_sample {
+        let idx: u16 = idx_str
+            .parse()
+            .unwrap_or_else(|err| panic!("invalid leaves_sample index {idx_str:?}: {err}"));
+        let got = synth_leaf(env, idx);
+        assert_eq!(
+            got,
+            BytesN::from_array(env, &hex32(want_hex)),
+            "synth_leaf({idx}) disagreed with leaves_sample"
+        );
+    }
+
+    assert!(
+        !fixture.tree_vectors.roots.is_empty(),
+        "fixture must include tree_vectors.roots"
+    );
+    for (n_str, want_hex) in &fixture.tree_vectors.roots {
+        let n: u16 = n_str
+            .parse()
+            .unwrap_or_else(|err| panic!("invalid tree root count {n_str:?}: {err}"));
+        let digests: std::vec::Vec<BytesN<32>> = (0..n).map(|i| synth_leaf(env, i)).collect();
+        let got = root_from_digests(env, &digests);
+        assert_eq!(
+            got,
+            BytesN::from_array(env, &hex32(want_hex)),
+            "root for n={} disagrees with the shared vector",
+            n
+        );
+    }
+
+    assert!(
+        !fixture.tree_vectors.cases.is_empty(),
+        "fixture must include tree_vectors.cases with explicit leaf sets"
+    );
+    for case in &fixture.tree_vectors.cases {
+        assert_eq!(
+            case.leaves_hex.len(),
+            case.leaf_count as usize,
+            "case n={} leaf set length mismatch",
+            case.leaf_count
+        );
+        let generated: std::vec::Vec<BytesN<32>> =
+            (0..case.leaf_count).map(|i| synth_leaf(env, i)).collect();
+        let from_fixture: std::vec::Vec<BytesN<32>> = case
+            .leaves_hex
+            .iter()
+            .map(|h| BytesN::from_array(env, &hex32(h)))
+            .collect();
+        assert_eq!(
+            generated, from_fixture,
+            "fixture leaves_hex for n={} disagrees with synth_leaf generator",
+            case.leaf_count
+        );
+        let got_root = root_from_digests(env, &from_fixture);
+        assert_eq!(
+            got_root,
+            BytesN::from_array(env, &hex32(&case.expected_root_hex)),
+            "root for case n={} disagrees with expected_root_hex",
+            case.leaf_count
+        );
+    }
+
+    let pinned_proof = &fixture.tree_vectors.proof;
+    let proof_leaves: std::vec::Vec<BytesN<32>> = (0..pinned_proof.leaf_count)
+        .map(|i| synth_leaf(env, i))
+        .collect();
+    let target_leaf = BytesN::from_array(env, &hex32(&pinned_proof.leaf));
+    let expected_root = BytesN::from_array(env, &hex32(&pinned_proof.expected_root));
+    assert_eq!(
+        root_from_digests(env, &proof_leaves),
+        expected_root,
+        "pinned proof expected_root disagrees with root_from_digests"
+    );
+    let expected_siblings: std::vec::Vec<BytesN<32>> = pinned_proof
+        .siblings
+        .iter()
+        .map(|s| BytesN::from_array(env, &hex32(s)))
+        .collect();
+    let generated_siblings = proof_for_leaf(env, &proof_leaves, &target_leaf);
+    assert_eq!(
+        generated_siblings, expected_siblings,
+        "generated proof path for n={} disagrees with pinned fixture siblings",
+        pinned_proof.leaf_count
+    );
+    assert!(
+        GrainhackEscrow::verify_proof(
+            env,
+            &expected_root,
+            &target_leaf,
+            &sdk_proof(env, &expected_siblings),
+        ),
+        "contract verify_proof rejected the pinned fixture proof"
+    );
+}
+
+/// The tree, pinned across implementations from `fixtures/leaf_vector.json`.
 ///
 /// Every internal-node rule (the 0x01 prefix, the ascending leaf sort,
 /// promote-not-duplicate) was free to differ between this contract and the
@@ -821,59 +1016,37 @@ fn sdk_proof(env: &Env, proof: &[BytesN<32>]) -> Vec<BytesN<32>> {
 /// ```
 ///
 /// So 3, 5, 6 and 7 are the counts that can catch it; 1 and 2 anchor the
-/// degenerate cases; 38 is the real founding contributor pool size and the
-/// first tree intended for publication.
-///
-/// These digests are byte-identical to `tree_vectors.roots` in
-/// `Grainlify-Backend/internal/chain/testdata/leaf_vector.json`. If this fails,
-/// one implementation moved - fix the side that moved, do not edit the vector.
-/// A published root cannot be corrected, so a vector edited to match a changed
-/// builder is a claim nobody can make.
+/// degenerate cases; 9 covers a second odd promotion above an 8-leaf subtree;
+/// 38 is the real founding contributor pool size and the first tree intended
+/// for publication.
 #[test]
 fn tree_roots_match_the_pinned_cross_implementation_vectors() {
     let env = Env::default();
+    let fixture = load_cross_implementation_fixture();
 
-    let cases: [(u16, [u8; 32]); 7] = [
-        (
-            1,
-            hex32("7fa54a42524916a1648ec76ce75d295024840b7a3a4f4bbaf3e43155d0014767"),
-        ),
-        (
-            2,
-            hex32("f5c9186b3b65e6ce5e21dbc239099cca42e0a33498441279117df13a37dcbac2"),
-        ),
-        (
-            3,
-            hex32("ee89867ea8655639197d33339b404961ea36d5bbb6a0dba2f1149a8c7dc1eddc"),
-        ),
-        (
-            5,
-            hex32("70f49ea377797a1ce9e8e065d5e77024393a2109a8b6c8caf51c4a1b975242b3"),
-        ),
-        (
-            6,
-            hex32("d882a0abe524b3f68d10aa4da5e199b9284258b523abae598568fdfff89bdc43"),
-        ),
-        (
-            7,
-            hex32("73f9296cbe6d89bc6edb6ae7a8ec0cf4633c80bbe390da0fb0ea4291ac7427c5"),
-        ),
-        (
-            38,
-            hex32("7b4e1ecf8567f90c1fad1bdfac40a72fdb1444205b258994b65aa80078bcd093"),
-        ),
-    ];
+    assert_tree_vectors(&env, &fixture);
+}
 
-    for (n, want) in cases {
-        let digests: std::vec::Vec<BytesN<32>> = (0..n).map(|i| synth_leaf(&env, i)).collect();
-        let got = root_from_digests(&env, &digests);
-        assert_eq!(
-            got,
-            BytesN::from_array(&env, &want),
-            "root for n={} disagrees with the shared vector",
-            n
-        );
-    }
+#[test]
+#[should_panic(expected = "disagreed with expected_leaf_hex")]
+fn mutating_a_fixture_leaf_vector_is_detected() {
+    let env = Env::default();
+    let contract = env.register_contract(None, GrainhackEscrow);
+    let client = GrainhackEscrowClient::new(&env, &contract);
+    let mut fixture = load_cross_implementation_fixture();
+    fixture.leaf_vectors[0].expected_leaf_hex =
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    assert_leaf_vectors(&env, &client, &fixture);
+}
+
+#[test]
+#[should_panic(expected = "disagrees with expected_root_hex")]
+fn mutating_a_fixture_tree_vector_is_detected() {
+    let env = Env::default();
+    let mut fixture = load_cross_implementation_fixture();
+    fixture.tree_vectors.cases[0].expected_root_hex =
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    assert_tree_vectors(&env, &fixture);
 }
 
 /// The pinned proof, verified through the contract's real `verify_proof` rather
