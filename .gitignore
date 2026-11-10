@@ -17,3 +17,5 @@ deployments/testnet/*.wasm
 # snapshots are not part of the checked-in regression fixture.
 contracts/grainhack-escrow/test_snapshots/test/write_resource_baseline.*.json
 contracts/grainhack-escrow/test_snapshots/test/public_entry_points_stay_within_resource_baseline.*.json
+config.bat
+node_modules
